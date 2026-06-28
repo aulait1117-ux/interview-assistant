@@ -308,7 +308,6 @@ export default function SetupForm({ onStart, onBack }: Props) {
               <button
                 className="btn-primary"
                 onClick={() => {
-                  localStorage.removeItem(STORAGE_KEY)
                   onStart(profile)
                 }}
               >

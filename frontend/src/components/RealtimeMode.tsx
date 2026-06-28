@@ -217,7 +217,7 @@ export default function RealtimeMode({ sessionId, interviewType, userBackground,
     setUserAnswer('')
 
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/interview/hint-stream`, {
+      const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/interview/hint-stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
