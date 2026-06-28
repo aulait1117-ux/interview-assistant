@@ -38,17 +38,18 @@ async def get_hint(
     db: Connection = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    # 残り時間チェック（時間制限のあるプランのみ）
-    plan_info = PLANS.get(user["plan"], PLANS["free"])
-    minutes_limit = plan_info["minutes"]
-    minutes_used = user["trial_minutes_used"]
-    minutes_left = max(0, minutes_limit - minutes_used)
+    # 残り時間チェック（管理者はスキップ）
+    if not user.get("is_admin"):
+        plan_info = PLANS.get(user["plan"], PLANS["free"])
+        minutes_limit = plan_info["minutes"]
+        minutes_used = user["trial_minutes_used"]
+        minutes_left = max(0, minutes_limit - minutes_used)
 
-    if minutes_left == 0:
-        raise HTTPException(
-            status_code=403,
-            detail="利用可能な時間が終了しました。プランをアップグレードしてください。",
-        )
+        if minutes_left == 0:
+            raise HTTPException(
+                status_code=403,
+                detail="利用可能な時間が終了しました。プランをアップグレードしてください。",
+            )
 
     result = await claude_service.generate_hints(
         question=req.question,
@@ -69,17 +70,18 @@ async def get_hint_stream(
     db: Connection = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    # 残り時間チェック（時間制限のあるプランのみ）
-    plan_info = PLANS.get(user["plan"], PLANS["free"])
-    minutes_limit = plan_info["minutes"]
-    minutes_used = user["trial_minutes_used"]
-    minutes_left = max(0, minutes_limit - minutes_used)
+    # 残り時間チェック（管理者はスキップ）
+    if not user.get("is_admin"):
+        plan_info = PLANS.get(user["plan"], PLANS["free"])
+        minutes_limit = plan_info["minutes"]
+        minutes_used = user["trial_minutes_used"]
+        minutes_left = max(0, minutes_limit - minutes_used)
 
-    if minutes_left == 0:
-        raise HTTPException(
-            status_code=403,
-            detail="利用可能な時間が終了しました。プランをアップグレードしてください。",
-        )
+        if minutes_left == 0:
+            raise HTTPException(
+                status_code=403,
+                detail="利用可能な時間が終了しました。プランをアップグレードしてください。",
+            )
 
     async def event_generator():
         full_text = ""

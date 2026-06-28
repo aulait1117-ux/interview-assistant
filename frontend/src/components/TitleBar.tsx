@@ -6,18 +6,6 @@ interface TitleBarProps {
   onCollapse?: () => void
 }
 
-declare global {
-  interface Window {
-    electronAPI?: {
-      minimize?: () => void
-      close?: () => void
-      setOpacity?: (opacity: number) => void
-      expand?: () => void
-      collapse?: () => void
-      isElectron?: boolean
-    }
-  }
-}
 
 const isElectron = typeof window !== 'undefined' && !!window.electronAPI
 

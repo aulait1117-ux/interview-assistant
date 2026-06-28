@@ -9,6 +9,7 @@ interface User {
   minutes_limit: number
   minutes_left: number
   can_use_discount: boolean
+  is_admin: boolean
 }
 
 interface AuthContextType {

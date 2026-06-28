@@ -30,17 +30,25 @@ export default function AppHeader({ onLogin, onPricing, onHome }: Props) {
         {user && (
           <div className="usage-meter">
             <span className="usage-plan">{user.plan_name}</span>
-            <div className="usage-bar">
-              <div
-                className="usage-fill"
-                style={{ width: `${minutesPercent}%`, background: meterColor }}
-              />
-            </div>
-            <span className="usage-text">
-              {user.minutes_left >= 60
-                ? `残り${Math.floor(user.minutes_left / 60)}時間${user.minutes_left % 60}分`
-                : `残り${user.minutes_left}分`}
-            </span>
+            {user.is_admin ? (
+              <span className="usage-text" style={{ color: '#a78bfa', fontWeight: 600 }}>
+                管理者
+              </span>
+            ) : (
+              <>
+                <div className="usage-bar">
+                  <div
+                    className="usage-fill"
+                    style={{ width: `${minutesPercent}%`, background: meterColor }}
+                  />
+                </div>
+                <span className="usage-text">
+                  {user.minutes_left >= 60
+                    ? `残り${Math.floor(user.minutes_left / 60)}時間${user.minutes_left % 60}分`
+                    : `残り${user.minutes_left}分`}
+                </span>
+              </>
+            )}
           </div>
         )}
 

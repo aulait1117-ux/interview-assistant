@@ -5,7 +5,7 @@ from pydantic import BaseModel, EmailStr
 from database import get_db
 from services.auth_service import (
     hash_password, verify_password, create_token,
-    decode_token, new_user_id, PLANS
+    decode_token, decode_token_payload, new_user_id, PLANS
 )
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -32,7 +32,7 @@ async def get_current_user(
     if not user_id:
         raise HTTPException(status_code=401, detail="トークンが無効です")
     cursor = await db.execute(
-        "SELECT id, email, plan, plan_expires_at, trial_minutes_used, used_day_plan FROM users WHERE id = ?",
+        "SELECT id, email, plan, plan_expires_at, trial_minutes_used, used_day_plan, is_admin FROM users WHERE id = ?",
         (user_id,)
     )
     row = await cursor.fetchone()
@@ -41,7 +41,7 @@ async def get_current_user(
     return {
         "id": row[0], "email": row[1], "plan": row[2],
         "plan_expires_at": row[3], "trial_minutes_used": row[4],
-        "used_day_plan": row[5],
+        "used_day_plan": row[5], "is_admin": bool(row[6]),
     }
 
 
@@ -58,31 +58,38 @@ async def register(req: RegisterRequest, db: Connection = Depends(get_db)):
         (user_id, req.email.lower(), hash_password(req.password))
     )
     await db.commit()
-    token = create_token(user_id)
-    return {"token": token, "email": req.email, "plan": "free"}
+    token = create_token(user_id, is_admin=False)
+    return {"token": token, "email": req.email, "plan": "free", "is_admin": False}
 
 
 @router.post("/login")
 async def login(req: LoginRequest, db: Connection = Depends(get_db)):
     cursor = await db.execute(
-        "SELECT id, password_hash, plan FROM users WHERE email = ?",
+        "SELECT id, password_hash, plan, is_admin FROM users WHERE email = ?",
         (req.email.lower(),)
     )
     row = await cursor.fetchone()
     if not row or not verify_password(req.password, row[1]):
         raise HTTPException(status_code=401, detail="メールアドレスまたはパスワードが間違っています")
-    token = create_token(row[0])
-    return {"token": token, "email": req.email, "plan": row[2]}
+    is_admin = bool(row[3])
+    token = create_token(row[0], is_admin=is_admin)
+    return {"token": token, "email": req.email, "plan": row[2], "is_admin": is_admin}
 
 
 @router.get("/me")
 async def me(user=Depends(get_current_user)):
     plan_info = PLANS.get(user["plan"], PLANS["free"])
-    minutes_left = max(0, plan_info["minutes"] - user["trial_minutes_used"])
+    # 管理者は時間制限なし（無制限として扱う）
+    if user["is_admin"]:
+        minutes_left = 99999
+        minutes_limit = 99999
+    else:
+        minutes_left = max(0, plan_info["minutes"] - user["trial_minutes_used"])
+        minutes_limit = plan_info["minutes"]
     return {
         **user,
         "plan_name": plan_info["name"],
-        "minutes_limit": plan_info["minutes"],
+        "minutes_limit": minutes_limit,
         "minutes_left": minutes_left,
         "can_use_discount": bool(user["used_day_plan"]),
     }

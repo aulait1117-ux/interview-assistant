@@ -14,3 +14,17 @@ services:
         generateValue: true
       - key: ENVIRONMENT
         value: production
+
+  - type: web
+    name: interview-assistant-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://interview-assistant-hrar.onrender.com
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

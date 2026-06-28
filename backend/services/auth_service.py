@@ -28,15 +28,26 @@ def verify_password(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode(), hashed.encode())
 
 
-def create_token(user_id: str) -> str:
+def create_token(user_id: str, is_admin: bool = False) -> str:
     expire = datetime.utcnow() + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
-    return jwt.encode({"sub": user_id, "exp": expire}, SECRET_KEY, algorithm=ALGORITHM)
+    return jwt.encode(
+        {"sub": user_id, "exp": expire, "is_admin": is_admin},
+        SECRET_KEY,
+        algorithm=ALGORITHM,
+    )
 
 
 def decode_token(token: str) -> str | None:
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         return payload.get("sub")
+    except JWTError:
+        return None
+
+
+def decode_token_payload(token: str) -> dict | None:
+    try:
+        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
     except JWTError:
         return None
 

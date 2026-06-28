@@ -1,5 +1,6 @@
 import aiosqlite
 import os
+import uuid
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "data", "interview.db")
 
@@ -22,9 +23,15 @@ async def init_db():
                 plan_expires_at TIMESTAMP,
                 trial_minutes_used INTEGER NOT NULL DEFAULT 0,
                 used_day_plan INTEGER NOT NULL DEFAULT 0,
+                is_admin INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # マイグレーション: 既存テーブルに is_admin カラムが無ければ追加
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass  # カラムが既に存在する場合は無視
         await db.execute("""
             CREATE TABLE IF NOT EXISTS payments (
                 id TEXT PRIMARY KEY,
@@ -73,6 +80,39 @@ async def init_db():
         """)
         await db.commit()
         await _seed_questions(db)
+        await _ensure_admin_user(db)
+
+
+async def _ensure_admin_user(db):
+    """環境変数 ADMIN_EMAIL / ADMIN_PASSWORD が設定されていれば管理者ユーザーを作成・更新する"""
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    admin_email = os.getenv("ADMIN_EMAIL", "admin@interview.local")
+    admin_password = os.getenv("ADMIN_PASSWORD", "admin1234")
+
+    # bcrypt は同期なので import して使用
+    import bcrypt
+    password_hash = bcrypt.hashpw(admin_password.encode(), bcrypt.gensalt()).decode()
+
+    cursor = await db.execute("SELECT id FROM users WHERE email = ?", (admin_email.lower(),))
+    row = await cursor.fetchone()
+
+    if row:
+        # 既存ユーザーを管理者に更新（パスワードも更新）
+        await db.execute(
+            "UPDATE users SET password_hash = ?, is_admin = 1 WHERE email = ?",
+            (password_hash, admin_email.lower())
+        )
+    else:
+        # 新規管理者ユーザーを作成
+        admin_id = str(uuid.uuid4())
+        await db.execute(
+            "INSERT INTO users (id, email, password_hash, plan, is_admin) VALUES (?, ?, ?, 'free', 1)",
+            (admin_id, admin_email.lower(), password_hash)
+        )
+
+    await db.commit()
 
 
 async def _seed_questions(db):

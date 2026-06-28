@@ -4,38 +4,6 @@ import { useSpeechRecognition } from '../hooks/useSpeechRecognition'
 import FeedbackPanel from './FeedbackPanel'
 import { useAuth } from '../hooks/useAuth'
 
-// Electron API の型拡張（オーバーレイ連携メソッドを含む）
-declare global {
-  interface Window {
-    electronAPI?: {
-      expand: () => void
-      collapse: () => void
-      minimize: () => void
-      close: () => void
-      hide: () => void
-      show: () => void
-      toggleAlwaysOnTop: () => void
-      moveWindow: (dx: number, dy: number) => void
-      getPosition: () => Promise<{ x: number; y: number }>
-      getSize: () => Promise<{ width: number; height: number }>
-      setSize: (w: number, h: number) => void
-      setOpacity: (opacity: number) => void
-      onAlwaysOnTopChanged: (cb: (val: boolean) => void) => () => void
-      // オーバーレイ連携
-      sendHintsToOverlay: (data: {
-        question: string
-        answer: string
-        isStreaming: boolean
-        streamingText: string
-      }) => void
-      toggleOverlay: () => void
-      showOverlay: () => void
-      hideOverlay: () => void
-      isElectron: boolean
-      platform: string
-    }
-  }
-}
 
 interface Props {
   sessionId: string
@@ -272,13 +240,13 @@ export default function RealtimeMode({ sessionId, interviewType, userBackground,
   const { isListening, transcript, startListening, stopListening } =
     useSpeechRecognition(interviewType, handleQuestionDetected)
 
-  // 残り時間が0になったら自動停止（stopListening が利用可能になった後に定義）
+  // 残り時間が0になったら自動停止（管理者はスキップ）
   useEffect(() => {
-    if (user && user.minutes_left === 0) {
+    if (user && !user.is_admin && user.minutes_left === 0) {
       stopListening()
       setTimeExpired(true)
     }
-  }, [user?.minutes_left, stopListening])
+  }, [user?.minutes_left, user?.is_admin, stopListening])
 
   // 機能2: ショートカットキー
   useEffect(() => {

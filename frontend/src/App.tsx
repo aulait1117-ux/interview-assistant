@@ -30,9 +30,9 @@ export default function App() {
     () => !!(typeof window !== 'undefined' && window.electronAPI?.isElectron)
   )
 
-  // アプリ起動中ずっと60秒ごとに使用時間を記録（無料・短期プランのみ）
+  // アプリ起動中ずっと60秒ごとに使用時間を記録（無料・短期プランのみ、管理者は除外）
   const { user, refreshUser } = auth
-  const hasTimeLimit = user != null && user.minutes_limit < 60 * 24
+  const hasTimeLimit = user != null && !user.is_admin && user.minutes_limit < 60 * 24
 
   const trackUsage = useCallback(async () => {
     try {
