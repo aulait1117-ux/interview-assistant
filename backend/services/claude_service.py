@@ -1,10 +1,14 @@
 import os
 import json
 import asyncio
+from pathlib import Path
 import anthropic
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load from backend/.env first, then walk up to find root .env (contains ANTHROPIC_API_KEY)
+_here = Path(__file__).resolve().parent.parent  # backend/
+load_dotenv(_here / ".env")
+load_dotenv(_here.parent / ".env")  # project root .env (fallback / supplement)
 
 client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 MODEL = "claude-haiku-4-5"
@@ -105,21 +109,44 @@ async def evaluate_answer(
 
 
 async def research_company_from_urls(company_name: str, urls: list[str]) -> dict:
-    from services.search_service import fetch_page_text
+    """
+    Research a company using provided URLs and/or company name.
+    - If URLs are provided: fetch each page and summarize with Claude.
+    - If no URLs (or all fail): use Wikipedia/DuckDuckGo Instant Answer API to find info.
+    """
+    from services.search_service import fetch_page_text, fetch_company_info_by_name
 
     pages_content = []
-    for url in urls[:3]:
+    valid_urls = [u for u in urls if u.strip().startswith("http")]
+
+    # Fetch URL-based content
+    for url in valid_urls[:3]:
         text = await fetch_page_text(url, max_chars=3000)
         if text:
             pages_content.append(f"--- URL: {url} ---\n{text}")
 
-    combined = "\n\n".join(pages_content) if pages_content else "ページの取得に失敗しました。"
+    # If no URLs or all URL fetches failed, try name-based lookup
+    name_info = ""
+    if not pages_content and company_name.strip():
+        name_info = await fetch_company_info_by_name(company_name.strip())
 
-    prompt = f"""以下のウェブページの内容をもとに、就活生が面接前に知っておくべき企業情報をまとめてください。
+    # Build combined context
+    if pages_content:
+        combined = "\n\n".join(pages_content)
+        source_note = "ウェブページの内容"
+    elif name_info:
+        combined = name_info
+        source_note = "Wikipedia・DuckDuckGo等の公開情報"
+    else:
+        combined = f"{company_name}についての情報が取得できませんでした。"
+        source_note = "情報なし"
+
+    prompt = f"""以下の情報をもとに、就活生が面接前に知っておくべき企業情報をまとめてください。
 
 企業名: {company_name}
+情報ソース: {source_note}
 
-【ページ内容】
+【取得情報】
 {combined[:5000]}
 
 以下のJSON形式で回答してください：
@@ -128,11 +155,11 @@ async def research_company_from_urls(company_name: str, urls: list[str]) -> dict
   "business": "主な事業・サービス（箇条書き3〜5点）",
   "culture": "企業文化・社風・理念・特徴",
   "strengths": "企業の強み・競合優位性・独自性",
-  "recent_topics": "最近の取り組み・注目点（ページから読み取れる範囲で）",
-  "interview_tips": "このページの内容から読み取れる、面接で使えるポイント・志望動機に活かせる情報"
+  "recent_topics": "最近の取り組み・注目点（取得情報から読み取れる範囲で）",
+  "interview_tips": "取得情報から読み取れる、面接で使えるポイント・志望動機に活かせる情報"
 }}
 
-ページに記載のない情報は無理に作成せず「記載なし」と記載してください。"""
+取得情報に記載のない項目は「記載なし」としてください。企業名だけから一般知識で補完する場合はその旨を明記してください。"""
 
     message = await client.messages.create(
         model=MODEL,
@@ -145,13 +172,13 @@ async def research_company_from_urls(company_name: str, urls: list[str]) -> dict
     end = text.rfind("}") + 1
     if start == -1 or end == 0:
         result = {
-            "overview": "ページの解析に失敗しました。URLが正しいか確認してください。",
+            "overview": "情報の解析に失敗しました。企業名またはURLを確認してください。",
             "business": "", "culture": "", "strengths": "",
             "recent_topics": "", "interview_tips": "",
         }
     else:
         result = json.loads(text[start:end])
-    result["sources"] = [{"title": url, "url": url} for url in urls]
+    result["sources"] = [{"title": url, "url": url} for url in valid_urls]
     return result
 
 

@@ -58,9 +58,11 @@ export default function SetupForm({ onStart, onBack }: Props) {
     }
   }, [profile])
 
+  const validUrls = urls.filter(u => u.trim().startsWith('http'))
+  const canResearch = profile.companyName.trim() !== '' || validUrls.length > 0
+
   const handleResearch = async () => {
-    const validUrls = urls.filter(u => u.trim().startsWith('http'))
-    if (!profile.companyName.trim() && validUrls.length === 0) return
+    if (!canResearch) return
     setIsResearching(true)
     setCompanyInfo(null)
     try {
@@ -69,8 +71,9 @@ export default function SetupForm({ onStart, onBack }: Props) {
         urls: validUrls,
       })
       setCompanyInfo(res.data)
-    } catch {
-      alert('企業情報の取得に失敗しました')
+    } catch (err: any) {
+      const msg = err?.response?.data?.detail || '企業情報の取得に失敗しました。会社名またはURLを確認してください。'
+      alert(msg)
     } finally {
       setIsResearching(false)
     }
@@ -187,7 +190,7 @@ export default function SetupForm({ onStart, onBack }: Props) {
                   <button
                     className="btn-research"
                     onClick={handleResearch}
-                    disabled={!profile.companyName.trim() || isResearching}
+                    disabled={!canResearch || isResearching}
                   >
                     {isResearching ? '調査中...' : '企業を調べる'}
                   </button>
@@ -195,7 +198,7 @@ export default function SetupForm({ onStart, onBack }: Props) {
               </div>
 
               <div className="form-field full url-inputs">
-                <label>企業HP・採用ページのURL（貼るとAIが自動解析）</label>
+                <label>企業HP・採用ページのURL（任意・貼るとAIが自動解析。URLなしでも会社名だけで調査可能）</label>
                 {urls.map((url, i) => (
                   <input
                     key={i}
