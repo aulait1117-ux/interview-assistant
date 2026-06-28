@@ -27,6 +27,11 @@ app.include_router(interview.router)
 app.include_router(feedback.router)
 
 
+@app.get("/")
+async def root():
+    return {"status": "ok", "service": "Interview Assistant API"}
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
