@@ -24,28 +24,50 @@ declare global {
   }
 }
 
+/** ブラウザモードでのウィンドウ位置（CSS drag用） */
+interface BrowserPos {
+  x: number
+  y: number
+}
+
 export default function OverlayApp() {
   const [hintData, setHintData] = useState<OverlayHintData | null>(null)
   const [opacity, setOpacity] = useState(0.88)
   const [isMinimized, setIsMinimized] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
+  // ブラウザモード用: CSS でパネルを動かすための位置 state
+  const [browserPos, setBrowserPos] = useState<BrowserPos>({ x: 10, y: 10 })
+
+  const isElectronOverlay = !!window.overlayAPI
 
   // ドラッグ用 ref
   const dragStartRef = useRef({ mouseX: 0, mouseY: 0 })
 
-  // メインアプリからのヒント受信
+  // メインアプリからのヒント受信 — Electron IPC または BroadcastChannel
   useEffect(() => {
+    // --- Electron IPC モード ---
     const api = window.overlayAPI
-    if (!api) return
-    const unsubscribe = api.onHintsUpdated((data) => {
-      setHintData(data)
-      // 新しい質問が来たら自動展開
-      if (data.question) setIsMinimized(false)
-    })
-    return unsubscribe
+    if (api) {
+      const unsubscribe = api.onHintsUpdated((data) => {
+        setHintData(data)
+        if (data.question) setIsMinimized(false)
+      })
+      return unsubscribe
+    }
+
+    // --- ブラウザ BroadcastChannel モード ---
+    const channel = new BroadcastChannel('overlay-channel')
+    channel.onmessage = (event: MessageEvent) => {
+      const { type, data } = event.data as { type: string; data: OverlayHintData }
+      if (type === 'hint') {
+        setHintData(data)
+        if (data.question) setIsMinimized(false)
+      }
+    }
+    return () => channel.close()
   }, [])
 
-  // 透明度の変更
+  // 透明度の変更（Electron モードのみ）
   useEffect(() => {
     window.overlayAPI?.setOpacity(opacity)
   }, [opacity])
@@ -65,7 +87,16 @@ export default function OverlayApp() {
       const dx = e.screenX - dragStartRef.current.mouseX
       const dy = e.screenY - dragStartRef.current.mouseY
       dragStartRef.current = { mouseX: e.screenX, mouseY: e.screenY }
-      window.overlayAPI?.moveWindow(dx, dy)
+      if (isElectronOverlay) {
+        // Electron モード: IPC でメインプロセスがウィンドウを動かす
+        window.overlayAPI?.moveWindow(dx, dy)
+      } else {
+        // ブラウザモード: CSS position を更新してパネルを動かす
+        setBrowserPos(prev => ({
+          x: Math.max(0, prev.x + dx),
+          y: Math.max(0, prev.y + dy),
+        }))
+      }
     }
 
     const onMouseUp = () => {
@@ -78,12 +109,24 @@ export default function OverlayApp() {
       window.removeEventListener('mousemove', onMouseMove)
       window.removeEventListener('mouseup', onMouseUp)
     }
-  }, [isDragging])
+  }, [isDragging, isElectronOverlay])
 
   // 表示テキストの選択（ストリーミング中は streamingText、完了後は answer）
   const displayText = hintData
     ? (hintData.isStreaming ? hintData.streamingText : hintData.answer)
     : null
+
+  // ブラウザモードでは、ウィンドウ全体が 400x300 の popup なので
+  // パネルを fixed 位置で動かす
+  const panelPositionStyle: React.CSSProperties = isElectronOverlay
+    ? { width: '100%', maxHeight: '100vh' }
+    : {
+        position: 'fixed',
+        left: browserPos.x,
+        top: browserPos.y,
+        width: 380,
+        maxHeight: '90vh',
+      }
 
   return (
     <div
@@ -91,9 +134,6 @@ export default function OverlayApp() {
       style={{
         position: 'fixed',
         inset: 0,
-        display: 'flex',
-        alignItems: 'flex-start',
-        justifyContent: 'flex-start',
         background: 'transparent',
         fontFamily: "'Noto Sans JP', 'Yu Gothic', sans-serif",
       }}
@@ -101,8 +141,7 @@ export default function OverlayApp() {
       <div
         className="overlay-panel"
         style={{
-          width: '100%',
-          maxHeight: '100vh',
+          ...panelPositionStyle,
           background: 'rgba(10, 15, 30, 0.82)',
           border: '1px solid rgba(99, 179, 237, 0.4)',
           borderRadius: 12,
@@ -197,7 +236,7 @@ export default function OverlayApp() {
 
             {/* 閉じるボタン */}
             <button
-              onClick={() => window.overlayAPI?.hide()}
+              onClick={() => isElectronOverlay ? window.overlayAPI?.hide() : window.close()}
               style={{
                 background: 'rgba(239, 68, 68, 0.3)',
                 border: 'none',
