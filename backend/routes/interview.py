@@ -2,10 +2,10 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from aiosqlite import Connection
-from ..database import get_db
+from database import get_db
 from fastapi import Query
 from pydantic import BaseModel
-from ..models import (
+from models import (
     HintRequest, HintResponse,
     SessionCreateRequest, SessionCreateResponse,
     SaveAnswerRequest,
@@ -14,9 +14,9 @@ from ..models import (
 class CompanyResearchRequest(BaseModel):
     company_name: str
     urls: list[str]
-from ..services import claude_service
-from ..routes.auth import get_current_user
-from ..services.auth_service import PLANS
+from services import claude_service
+from routes.auth import get_current_user
+from services.auth_service import PLANS
 
 router = APIRouter(prefix="/api/interview", tags=["interview"])
 

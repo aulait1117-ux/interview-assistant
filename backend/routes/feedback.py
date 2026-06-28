@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from aiosqlite import Connection
-from ..database import get_db
-from ..models import SessionFeedbackRequest, SessionFeedbackResponse
-from ..services import claude_service
+from database import get_db
+from models import SessionFeedbackRequest, SessionFeedbackResponse
+from services import claude_service
 
 router = APIRouter(prefix="/api/feedback", tags=["feedback"])
 

@@ -2,8 +2,8 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Header
 from aiosqlite import Connection
 from pydantic import BaseModel, EmailStr
-from ..database import get_db
-from ..services.auth_service import (
+from database import get_db
+from services.auth_service import (
     hash_password, verify_password, create_token,
     decode_token, new_user_id, PLANS
 )

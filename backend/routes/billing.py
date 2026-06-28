@@ -4,9 +4,9 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request, Header
 from aiosqlite import Connection
 from pydantic import BaseModel
-from ..database import get_db
-from ..routes.auth import get_current_user
-from ..services.auth_service import PLANS
+from database import get_db
+from routes.auth import get_current_user
+from services.auth_service import PLANS
 
 router = APIRouter(prefix="/api/billing", tags=["billing"])
 

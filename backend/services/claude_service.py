@@ -105,7 +105,7 @@ async def evaluate_answer(
 
 
 async def research_company_from_urls(company_name: str, urls: list[str]) -> dict:
-    from .search_service import fetch_page_text
+    from services.search_service import fetch_page_text
 
     pages_content = []
     for url in urls[:3]:
