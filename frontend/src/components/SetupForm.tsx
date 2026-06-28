@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import axios from 'axios'
 import { UserProfile } from '../types'
 
@@ -22,6 +22,8 @@ interface Props {
 const GRADE_OPTIONS = ['大学1年', '大学2年', '大学3年', '大学4年', '大学院1年', '大学院2年', 'その他']
 
 const STORAGE_KEY = 'interview_setup_profile'
+const COMPANY_HISTORY_KEY = 'interview_company_history'
+const MAX_HISTORY = 10
 
 const EMPTY_PROFILE: UserProfile = {
   name: '', university: '', faculty: '', grade: '大学3年',
@@ -42,12 +44,89 @@ function loadProfileFromStorage(): UserProfile {
   return EMPTY_PROFILE
 }
 
+function loadHistoryFromStorage(): string[] {
+  try {
+    const saved = localStorage.getItem(COMPANY_HISTORY_KEY)
+    if (saved) return JSON.parse(saved) as string[]
+  } catch {
+    // ignore
+  }
+  return []
+}
+
+function saveHistoryToStorage(history: string[]) {
+  try {
+    localStorage.setItem(COMPANY_HISTORY_KEY, JSON.stringify(history))
+  } catch {
+    // ignore
+  }
+}
+
+function addToHistory(history: string[], value: string): string[] {
+  const trimmed = value.trim()
+  if (!trimmed) return history
+  const filtered = history.filter(h => h !== trimmed)
+  return [trimmed, ...filtered].slice(0, MAX_HISTORY)
+}
+
+// 履歴ドロップダウンコンポーネント
+interface HistoryDropdownProps {
+  history: string[]
+  onSelect: (value: string) => void
+  onDelete: (value: string) => void
+  onClearAll: () => void
+}
+
+function HistoryDropdown({ history, onSelect, onDelete, onClearAll }: HistoryDropdownProps) {
+  if (history.length === 0) return null
+  return (
+    <div className="history-dropdown">
+      <div className="history-header">
+        <span className="history-title">履歴</span>
+        <button
+          className="history-clear-all"
+          onClick={e => { e.preventDefault(); e.stopPropagation(); onClearAll() }}
+          type="button"
+        >
+          すべて削除
+        </button>
+      </div>
+      <ul className="history-list">
+        {history.map(item => (
+          <li key={item} className="history-item">
+            <button
+              className="history-item-select"
+              onClick={e => { e.preventDefault(); e.stopPropagation(); onSelect(item) }}
+              type="button"
+            >
+              {item}
+            </button>
+            <button
+              className="history-item-delete"
+              onClick={e => { e.preventDefault(); e.stopPropagation(); onDelete(item) }}
+              type="button"
+              aria-label={`${item}を削除`}
+            >
+              ×
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 export default function SetupForm({ onStart, onBack }: Props) {
   const [profile, setProfile] = useState<UserProfile>(loadProfileFromStorage)
   const [step, setStep] = useState<'user' | 'company'>('user')
   const [companyInfo, setCompanyInfo] = useState<CompanyInfo | null>(null)
   const [isResearching, setIsResearching] = useState(false)
   const [urls, setUrls] = useState(['', ''])
+
+  // 履歴の状態
+  const [history, setHistory] = useState<string[]>(loadHistoryFromStorage)
+  const [showHistory, setShowHistory] = useState(false)
+  const companyInputRef = useRef<HTMLDivElement>(null)
 
   // profileが変わるたびにlocalStorageへ保存
   useEffect(() => {
@@ -58,6 +137,27 @@ export default function SetupForm({ onStart, onBack }: Props) {
     }
   }, [profile])
 
+  // 履歴が変わるたびにlocalStorageへ保存
+  useEffect(() => {
+    saveHistoryToStorage(history)
+  }, [history])
+
+  // 外側クリックで履歴を閉じる
+  const handleOutsideClick = useCallback((e: MouseEvent) => {
+    if (companyInputRef.current && !companyInputRef.current.contains(e.target as Node)) {
+      setShowHistory(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (showHistory) {
+      document.addEventListener('mousedown', handleOutsideClick)
+    } else {
+      document.removeEventListener('mousedown', handleOutsideClick)
+    }
+    return () => document.removeEventListener('mousedown', handleOutsideClick)
+  }, [showHistory, handleOutsideClick])
+
   const validUrls = urls.filter(u => u.trim().startsWith('http'))
   const canResearch = profile.companyName.trim() !== '' || validUrls.length > 0
 
@@ -65,6 +165,22 @@ export default function SetupForm({ onStart, onBack }: Props) {
     if (!canResearch) return
     setIsResearching(true)
     setCompanyInfo(null)
+
+    // 調査実行時に会社名をhistoryへ保存
+    const valuesToSave: string[] = []
+    if (profile.companyName.trim()) valuesToSave.push(profile.companyName.trim())
+    validUrls.forEach(u => valuesToSave.push(u))
+    if (valuesToSave.length > 0) {
+      setHistory(prev => {
+        let next = [...prev]
+        // 複数ある場合は先頭からまとめて追加
+        for (let i = valuesToSave.length - 1; i >= 0; i--) {
+          next = addToHistory(next, valuesToSave[i])
+        }
+        return next
+      })
+    }
+
     try {
       const res = await axios.post<CompanyInfo>('/api/interview/company-research', {
         company_name: profile.companyName,
@@ -83,6 +199,32 @@ export default function SetupForm({ onStart, onBack }: Props) {
     setProfile(prev => ({ ...prev, [key]: value }))
 
   const isUserStepValid = profile.name.trim() !== ''
+
+  const handleSelectHistory = (value: string) => {
+    if (value.startsWith('http')) {
+      // URLの場合は最初の空URLスロットに入れる
+      const next = [...urls]
+      const emptyIdx = next.findIndex(u => !u.trim())
+      if (emptyIdx !== -1) {
+        next[emptyIdx] = value
+      } else {
+        next[0] = value
+      }
+      setUrls(next)
+    } else {
+      set('companyName', value)
+    }
+    setShowHistory(false)
+  }
+
+  const handleDeleteHistory = (value: string) => {
+    setHistory(prev => prev.filter(h => h !== value))
+  }
+
+  const handleClearAllHistory = () => {
+    setHistory([])
+    setShowHistory(false)
+  }
 
   return (
     <div className="setup-form-page">
@@ -180,13 +322,25 @@ export default function SetupForm({ onStart, onBack }: Props) {
             <div className="form-grid">
               <div className="form-field company-field">
                 <label>会社名</label>
-                <div className="company-input-row">
-                  <input
-                    type="text"
-                    placeholder="例：株式会社○○"
-                    value={profile.companyName}
-                    onChange={e => set('companyName', e.target.value)}
-                  />
+                <div className="company-input-row" ref={companyInputRef}>
+                  <div className="company-input-with-history">
+                    <input
+                      type="text"
+                      placeholder="例：株式会社○○"
+                      value={profile.companyName}
+                      onChange={e => set('companyName', e.target.value)}
+                      onFocus={() => setShowHistory(true)}
+                      autoComplete="off"
+                    />
+                    {showHistory && history.length > 0 && (
+                      <HistoryDropdown
+                        history={history}
+                        onSelect={handleSelectHistory}
+                        onDelete={handleDeleteHistory}
+                        onClearAll={handleClearAllHistory}
+                      />
+                    )}
+                  </div>
                   <button
                     className="btn-research"
                     onClick={handleResearch}
