@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ヒントオーバーレイ</title>
+    <style>
+      /* オーバーレイ用ベーススタイル: 透過背景・余白なし */
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+        overflow: hidden;
+        -webkit-app-region: no-drag;
+        user-select: none;
+      }
+      #overlay-root {
+        width: 100vw;
+        height: 100vh;
+        background: transparent;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="overlay-root"></div>
+    <script type="module" src="/src/overlay-main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,79 @@
+{
+  "name": "interview-assistant-electron",
+  "version": "0.1.0",
+  "description": "学生向け面接サポートデスクトップアプリ",
+  "main": "electron/main.js",
+  "private": true,
+  "scripts": {
+    "electron:dev": "concurrently --kill-others \"npm run dev --prefix frontend\" \"cross-env NODE_ENV=development node scripts/launch-electron.js\"",
+    "electron:build": "npm run build --prefix frontend && electron-builder",
+    "electron:build:win": "npm run build --prefix frontend && electron-builder --win",
+    "electron:build:mac": "npm run build --prefix frontend && electron-builder --mac"
+  },
+  "build": {
+    "appId": "com.kigyodo.interview-assistant",
+    "productName": "面接アシスタント",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "electron/**/*",
+      "frontend/dist/**/*",
+      "!**/node_modules/**",
+      "!frontend/node_modules/**"
+    ],
+    "extraMetadata": {
+      "main": "electron/main.js"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.icns",
+      "category": "public.app-category.productivity",
+      "darkModeSupport": true
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "面接アシスタント"
+    }
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
+  },
+  "allowScripts": {
+    "electron@33.4.11": true
+  }
+}
