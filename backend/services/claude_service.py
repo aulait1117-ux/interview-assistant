@@ -1,17 +1,16 @@
 import os
-import json
-import asyncio
 from pathlib import Path
 import anthropic
 from dotenv import load_dotenv
 
-# Load from backend/.env first, then walk up to find root .env (contains ANTHROPIC_API_KEY)
-_here = Path(__file__).resolve().parent.parent  # backend/
+_here = Path(__file__).resolve().parent.parent
 load_dotenv(_here / ".env")
-load_dotenv(_here.parent / ".env")  # project root .env (fallback / supplement)
+load_dotenv(_here.parent / ".env")
 
 client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-MODEL = "claude-haiku-4-5"
+
+MODEL_FAST = "claude-haiku-4-5"      # 速度優先（ヒント生成・ストリーミング）
+MODEL_QUALITY = "claude-sonnet-4-6"  # 品質優先（評価・企業研究・フィードバック）
 
 INTERVIEW_TYPE_CONTEXT = {
     "就活": "日本の新卒就職活動（就活）の面接",
@@ -21,30 +20,226 @@ INTERVIEW_TYPE_CONTEXT = {
     "面接アシスト": "就職・転職・インターンなどあらゆる面接",
 }
 
+# ─────────────────────────────────────────────
+# システムプロンプト（プロンプトキャッシュ対象 / 1024トークン以上で有効）
+# ─────────────────────────────────────────────
+BASE_COACH_SYSTEM = """あなたは日本の面接専門コーチです。就職活動、転職、インターンシップ、大学院入試など、あらゆる面接場面で応募者を支援する経験豊富なプロフェッショナルです。
 
+## 専門知識
+
+### 日本の就活文化
+- 新卒一括採用の仕組みと企業が求めるポテンシャル採用の考え方
+- 自己分析（強み・弱み・価値観の言語化）の手法
+- ガクチカ（学生時代に力を入れたこと）の構成と表現方法
+- 志望動機の説得力ある組み立て方（なぜこの業界→なぜこの企業→なぜこの職種）
+- 逆質問の戦略的な活用方法
+
+### 面接形式別の対策
+- 個人面接・集団面接・グループディスカッション
+- ケース面接（フェルミ推定・課題解決型）
+- 英語面接（外資系・グローバル企業向け、STAR法の英語表現）
+- 技術面接・専門職面接
+- 大学院・研究職の面接（研究内容の平易な説明・学術的背景のアピール）
+
+### 業界別の特徴
+- 総合商社・金融・コンサル・IT・メーカー・インフラ・医療・教育・公務員
+- 各業界が重視する素養とアピールすべきポイント
+
+## 回答品質の基準
+
+### 構成（STAR法を基本とする）
+- Situation（状況）：簡潔に背景を説明する
+- Task（課題）：自分が取り組んだ課題・目標を明確にする
+- Action（行動）：具体的にどう動いたかを主語を「私」にして述べる
+- Result（結果）：数値や事実で成果を示し、学びにつなげる
+
+### 表現の原則
+1. 具体性：抽象的な表現より具体的なエピソード・数字・期間・規模を優先する
+2. 簡潔さ：面接官が理解しやすい150〜200字を目安とし、冗長にしない
+3. 自然さ：暗記した台本でなく、自然な話し言葉に近い敬語で表現する
+4. 個別最適化：応募者の業界・企業文化・職種に合わせてカスタマイズする
+5. 一貫性：他の質問への回答と矛盾しないよう整合性を保つ
+
+### 評価観点（100点満点）
+- 論理的構成（25点）：結論ファースト・話の流れが明確か
+- 具体性・エビデンス（25点）：数字・固有名詞・エピソードで裏付けられているか
+- 企業・職種への適合性（25点）：企業研究が反映されているか・ポジションに合っているか
+- 表現・言語力（25点）：敬語・語彙・話しやすさが適切か
+
+## 絶対に守るルール
+- 応募者を傷つける批判はしない。改善点は必ず「どう直すか」まで提示する
+- スコアは甘くつけない。実際の面接選考基準に準拠し、70点台が平均的な水準
+- 英語面接では英語で回答を生成する
+- 「です・ます」調を基本とし、話し言葉に近い自然な敬語を使う"""
+
+BASE_EVALUATOR_SYSTEM = BASE_COACH_SYSTEM + """
+
+## 評価時の追加指針
+- 厳しさと建設性のバランスを保つ。採用担当者目線で本質的なフィードバックを提供する
+- 改善後の模範回答は応募者の個性・エピソードを活かしつつ洗練させる
+- 「良かった点」を必ず1つ以上含め、改善意欲を損なわない
+- 実際の面接では一度しか言えないことを念頭に、本番で使える回答を目指す"""
+
+
+# ─────────────────────────────────────────────
+# ツール定義（tool_use で型安全な構造化出力）
+# ─────────────────────────────────────────────
+def _hint_tool() -> dict:
+    return {
+        "name": "output_hint",
+        "description": "面接質問への模範回答・ポイントを出力する",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "answer": {
+                    "type": "string",
+                    "description": "模範回答（150〜200字程度。英語面接は英語で。敬語・話し言葉に近い自然な表現）"
+                },
+                "short_answer": {
+                    "type": "string",
+                    "description": "一言まとめ（30字以内。回答の核心を凝縮した一文）"
+                },
+                "key_points": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "回答の重要ポイント3点（各20〜40字）"
+                },
+                "caution": {
+                    "type": "string",
+                    "description": "この質問で陥りがちな落とし穴・注意点（任意）"
+                }
+            },
+            "required": ["answer", "short_answer", "key_points"]
+        }
+    }
+
+
+def _evaluation_tool() -> dict:
+    return {
+        "name": "output_evaluation",
+        "description": "面接回答の評価結果を出力する",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "score": {
+                    "type": "integer",
+                    "description": "0〜100点。実際の面接基準に準拠（70点台が平均水準）"
+                },
+                "feedback": {
+                    "type": "string",
+                    "description": "全体評価コメント（2〜3文。良い点と改善点のバランスよく）"
+                },
+                "improved_answer": {
+                    "type": "string",
+                    "description": "応募者の回答を元に改善した模範回答（個性を活かしつつ洗練）"
+                },
+                "points": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "評価ポイント（良かった点1つ、改善点2つ、計3つ）"
+                }
+            },
+            "required": ["score", "feedback", "improved_answer", "points"]
+        }
+    }
+
+
+def _company_research_tool() -> dict:
+    return {
+        "name": "output_company_research",
+        "description": "就活生向け企業研究サマリーを出力する",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "overview": {"type": "string", "description": "企業概要（事業内容・規模・設立など2〜3文）"},
+                "business": {"type": "string", "description": "主な事業・サービス（箇条書き3〜5点）"},
+                "culture": {"type": "string", "description": "企業文化・社風・経営理念・求める人物像"},
+                "strengths": {"type": "string", "description": "企業の強み・競合優位性・独自性"},
+                "recent_topics": {"type": "string", "description": "最近の取り組み・ニュース・注目点"},
+                "interview_tips": {"type": "string", "description": "面接で使えるポイント・志望動機に活かせる情報・想定質問"}
+            },
+            "required": ["overview", "business", "culture", "strengths", "recent_topics", "interview_tips"]
+        }
+    }
+
+
+def _session_feedback_tool() -> dict:
+    return {
+        "name": "output_session_feedback",
+        "description": "面接セッション全体の総合フィードバックを出力する",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "overall_score": {"type": "integer", "description": "セッション全体の総合スコア（0〜100点）"},
+                "summary": {"type": "string", "description": "セッション全体の総評（3〜4文。傾向・強み・課題を総括）"},
+                "strengths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "セッションを通じて見られた強み（3点）"
+                },
+                "improvements": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "改善が必要な点（3点。具体的で実行可能な内容）"
+                },
+                "action_items": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "次の面接までにやるべきアクション（3点）"
+                }
+            },
+            "required": ["overall_score", "summary", "strengths", "improvements", "action_items"]
+        }
+    }
+
+
+def _extract_tool_result(message) -> dict:
+    """tool_use ブロックから input を取り出す"""
+    for block in message.content:
+        if block.type == "tool_use":
+            return block.input
+    raise ValueError(f"ツール結果が見つかりません: {message.content}")
+
+
+# ─────────────────────────────────────────────
+# トークン数カウント（コスト見積もり用）
+# ─────────────────────────────────────────────
+async def count_tokens(messages: list, system: list | None = None) -> int:
+    response = await client.messages.count_tokens(
+        model=MODEL_FAST,
+        system=system or [],
+        messages=messages,
+    )
+    return response.input_tokens
+
+
+# ─────────────────────────────────────────────
+# 機能実装
+# ─────────────────────────────────────────────
 async def generate_hints(
     question: str,
     interview_type: str,
     user_background: str | None,
 ) -> dict:
     context = INTERVIEW_TYPE_CONTEXT.get(interview_type, "面接")
-    bg_text = f"\n背景: {user_background}" if user_background else ""
-
-    prompt = f"""{context}コーチ。質問への模範回答をJSONで返せ。{bg_text}
-質問: {question}
-{{"answer":"模範回答（150字、敬語、英語面接は英語）"}}
-JSONのみ返すこと。"""
+    bg_text = f"\n応募者の背景: {user_background}" if user_background else ""
 
     message = await client.messages.create(
-        model=MODEL,
-        max_tokens=400,
-        messages=[{"role": "user", "content": prompt}],
+        model=MODEL_FAST,
+        max_tokens=600,
+        system=[{
+            "type": "text",
+            "text": BASE_COACH_SYSTEM,
+            "cache_control": {"type": "ephemeral"}
+        }],
+        tools=[_hint_tool()],
+        tool_choice={"type": "tool", "name": "output_hint"},
+        messages=[{
+            "role": "user",
+            "content": f"面接種別: {context}{bg_text}\n\n質問: {question}\n\n模範回答とポイントを出力してください。"
+        }],
     )
-
-    text = message.content[0].text
-    start = text.find("{")
-    end = text.rfind("}") + 1
-    return json.loads(text[start:end])
+    return _extract_tool_result(message)
 
 
 async def generate_hints_stream(
@@ -52,18 +247,22 @@ async def generate_hints_stream(
     interview_type: str,
     user_background: str | None,
 ):
-    """Async generator that yields text chunks from the streaming API."""
+    """ストリーミング用（リアルタイム表示のためテキスト出力を維持）"""
     context = INTERVIEW_TYPE_CONTEXT.get(interview_type, "面接")
-    bg_text = f"\n背景: {user_background}" if user_background else ""
-
-    prompt = f"""{context}コーチ。質問への模範回答を返せ。{bg_text}
-質問: {question}
-模範回答（150字程度、敬語、英語面接は英語）を直接テキストで返すこと。"""
+    bg_text = f"\n応募者の背景: {user_background}" if user_background else ""
 
     async with client.messages.stream(
-        model=MODEL,
+        model=MODEL_FAST,
         max_tokens=400,
-        messages=[{"role": "user", "content": prompt}],
+        system=[{
+            "type": "text",
+            "text": BASE_COACH_SYSTEM,
+            "cache_control": {"type": "ephemeral"}
+        }],
+        messages=[{
+            "role": "user",
+            "content": f"面接種別: {context}{bg_text}\n\n質問: {question}\n\n模範回答（150字程度、敬語、英語面接は英語）を直接テキストで返してください。"
+        }],
     ) as stream:
         async for text in stream.text_stream:
             yield text
@@ -76,61 +275,39 @@ async def evaluate_answer(
 ) -> dict:
     context = INTERVIEW_TYPE_CONTEXT.get(interview_type, "面接")
 
-    prompt = f"""あなたは{context}の採用コーチです。応募者の回答を評価し、改善案を提示してください。
-
-面接種別: {interview_type}
-質問: {question}
-応募者の回答: {user_answer}
-
-以下のJSON形式で評価してください：
-{{
-  "score": 75,
-  "feedback": "全体的な評価コメント（2〜3文）",
-  "improved_answer": "改善した模範回答（応募者の回答を元に改善したもの）",
-  "points": [
-    "良かった点",
-    "改善ポイント1",
-    "改善ポイント2"
-  ]
-}}
-
-スコアは0〜100点。改善した模範回答は応募者の個性を活かしつつ改善したもの。"""
-
     message = await client.messages.create(
-        model=MODEL,
+        model=MODEL_QUALITY,
         max_tokens=1200,
-        messages=[{"role": "user", "content": prompt}],
+        system=[{
+            "type": "text",
+            "text": BASE_EVALUATOR_SYSTEM,
+            "cache_control": {"type": "ephemeral"}
+        }],
+        tools=[_evaluation_tool()],
+        tool_choice={"type": "tool", "name": "output_evaluation"},
+        messages=[{
+            "role": "user",
+            "content": f"面接種別: {context}\n質問: {question}\n応募者の回答: {user_answer}\n\n採用担当者目線で評価してください。"
+        }],
     )
-
-    text = message.content[0].text
-    start = text.find("{")
-    end = text.rfind("}") + 1
-    return json.loads(text[start:end])
+    return _extract_tool_result(message)
 
 
 async def research_company_from_urls(company_name: str, urls: list[str]) -> dict:
-    """
-    Research a company using provided URLs and/or company name.
-    - If URLs are provided: fetch each page and summarize with Claude.
-    - If no URLs (or all fail): use Wikipedia/DuckDuckGo Instant Answer API to find info.
-    """
     from services.search_service import fetch_page_text, fetch_company_info_by_name
 
     pages_content = []
     valid_urls = [u for u in urls if u.strip().startswith("http")]
 
-    # Fetch URL-based content
     for url in valid_urls[:3]:
         text = await fetch_page_text(url, max_chars=3000)
         if text:
             pages_content.append(f"--- URL: {url} ---\n{text}")
 
-    # If no URLs or all URL fetches failed, try name-based lookup
     name_info = ""
     if not pages_content and company_name.strip():
         name_info = await fetch_company_info_by_name(company_name.strip())
 
-    # Build combined context
     if pages_content:
         combined = "\n\n".join(pages_content)
         source_note = "ウェブページの内容"
@@ -141,72 +318,85 @@ async def research_company_from_urls(company_name: str, urls: list[str]) -> dict
         combined = f"{company_name}についての情報が取得できませんでした。"
         source_note = "情報なし"
 
-    prompt = f"""以下の情報をもとに、就活生が面接前に知っておくべき企業情報をまとめてください。
-
-企業名: {company_name}
-情報ソース: {source_note}
-
-【取得情報】
-{combined[:5000]}
-
-以下のJSON形式で回答してください：
-{{
-  "overview": "企業の概要（事業内容・規模など2〜3文）",
-  "business": "主な事業・サービス（箇条書き3〜5点）",
-  "culture": "企業文化・社風・理念・特徴",
-  "strengths": "企業の強み・競合優位性・独自性",
-  "recent_topics": "最近の取り組み・注目点（取得情報から読み取れる範囲で）",
-  "interview_tips": "取得情報から読み取れる、面接で使えるポイント・志望動機に活かせる情報"
-}}
-
-取得情報に記載のない項目は「記載なし」としてください。企業名だけから一般知識で補完する場合はその旨を明記してください。"""
-
     message = await client.messages.create(
-        model=MODEL,
+        model=MODEL_QUALITY,
         max_tokens=1500,
-        messages=[{"role": "user", "content": prompt}],
+        system=[{
+            "type": "text",
+            "text": BASE_COACH_SYSTEM,
+            "cache_control": {"type": "ephemeral"}
+        }],
+        tools=[_company_research_tool()],
+        tool_choice={"type": "tool", "name": "output_company_research"},
+        messages=[{
+            "role": "user",
+            "content": (
+                f"企業名: {company_name}\n"
+                f"情報ソース: {source_note}\n\n"
+                f"【取得情報】\n{combined[:5000]}\n\n"
+                "就活生が面接前に知っておくべき企業情報をまとめてください。"
+                "取得情報に記載のない項目は「記載なし」としてください。"
+            )
+        }],
     )
 
-    text = message.content[0].text
-    start = text.find("{")
-    end = text.rfind("}") + 1
-    if start == -1 or end == 0:
-        result = {
-            "overview": "情報の解析に失敗しました。企業名またはURLを確認してください。",
-            "business": "", "culture": "", "strengths": "",
-            "recent_topics": "", "interview_tips": "",
-        }
-    else:
-        result = json.loads(text[start:end])
+    result = _extract_tool_result(message)
     result["sources"] = [{"title": url, "url": url} for url in valid_urls]
     return result
 
 
+async def generate_session_feedback(qa_pairs: list[dict], interview_type: str) -> dict:
+    context = INTERVIEW_TYPE_CONTEXT.get(interview_type, "面接")
+    qa_text = "\n".join([
+        f"Q{i+1}: {qa['question']}\nA{i+1}: {qa.get('user_answer', '（回答なし）')}"
+        for i, qa in enumerate(qa_pairs)
+    ])
+
+    message = await client.messages.create(
+        model=MODEL_QUALITY,
+        max_tokens=1500,
+        system=[{
+            "type": "text",
+            "text": BASE_EVALUATOR_SYSTEM,
+            "cache_control": {"type": "ephemeral"}
+        }],
+        tools=[_session_feedback_tool()],
+        tool_choice={"type": "tool", "name": "output_session_feedback"},
+        messages=[{
+            "role": "user",
+            "content": f"面接種別: {context}\n\n【面接の質問と回答】\n{qa_text}\n\nセッション全体の総合フィードバックを出力してください。"
+        }],
+    )
+    return _extract_tool_result(message)
+
+
+# ─────────────────────────────────────────────
+# モック面接（削除済みルートの互換性のため残存）
+# ─────────────────────────────────────────────
 async def mock_interview_start(
     interview_type: str,
     user_background: str | None,
     company_info: str | None,
 ) -> dict:
+    import json
     context = INTERVIEW_TYPE_CONTEXT.get(interview_type, "面接")
     bg = f"\n応募者の背景:\n{user_background}" if user_background else ""
     co = f"\n企業情報:\n{company_info}" if company_info else ""
 
-    prompt = f"""あなたは{context}の面接官です。今から模擬面接を開始します。
-{bg}{co}
-
-最初の質問を1つしてください。定番の自己紹介から始めてください。
-
-以下のJSON形式で返してください：
-{{
-  "message": "面接官としての開始の挨拶 + 最初の質問（自然な面接官口調で）",
-  "question": "質問文だけ（評価用）",
-  "question_number": 1,
-  "total_questions": 6
-}}"""
-
-    msg = await client.messages.create(model=MODEL, max_tokens=600,
-                                       messages=[{"role": "user", "content": prompt}])
-    text = msg.content[0].text
+    message = await client.messages.create(
+        model=MODEL_FAST,
+        max_tokens=600,
+        system=[{"type": "text", "text": BASE_COACH_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+        messages=[{
+            "role": "user",
+            "content": (
+                f"あなたは{context}の面接官です。今から模擬面接を開始します。{bg}{co}\n\n"
+                "最初の質問（自己紹介から）を面接官として自然な口調でしてください。\n"
+                '{"message":"開始の挨拶+質問","question":"質問文","question_number":1,"total_questions":6} の形式でJSONのみ返してください。'
+            )
+        }],
+    )
+    text = message.content[0].text
     s, e = text.find("{"), text.rfind("}") + 1
     return json.loads(text[s:e])
 
@@ -219,130 +409,53 @@ async def mock_interview_evaluate_and_next(
     question_number: int,
     total_questions: int,
 ) -> dict:
+    import json
     context = INTERVIEW_TYPE_CONTEXT.get(interview_type, "面接")
     bg = f"\n応募者の背景:\n{user_background}" if user_background else ""
-
-    history_text = "\n".join([
-        f"面接官: {h['question']}\n応募者: {h['answer']}"
-        for h in history
-    ])
+    history_text = "\n".join([f"面接官: {h['question']}\n応募者: {h['answer']}" for h in history])
     current_q = history[-1]["question"] if history else ""
-
     is_last = question_number >= total_questions
 
-    if is_last:
-        next_instruction = "これが最後の質問への回答です。面接を締めくくる言葉を添えてください。next_questionはnullにしてください。"
-    else:
-        next_instruction = f"次の質問（第{question_number + 1}問）を1つしてください。前の回答を踏まえた自然な流れで。"
-
-    prompt = f"""あなたは{context}の面接官です。応募者の回答を評価し、次の質問をしてください。
-{bg}
-
-【これまでの面接】
-{history_text}
-
-【今回の質問】
-{current_q}
-
-【応募者の回答】
-{user_answer}
-
-{next_instruction}
-
-以下のJSON形式で返してください：
-{{
-  "score": 75,
-  "feedback": "この回答への簡潔なコメント（1〜2文、面接官として自然に）",
-  "good_points": "良かった点（1文）",
-  "improve_point": "改善点（1文、あれば）",
-  "message": "面接官としての返答 + 次の質問（自然な口調。最後の場合は締めくくりの言葉）",
-  "next_question": "次の質問文だけ（最後の場合はnull）",
-  "is_finished": {str(is_last).lower()}
-}}"""
-
-    msg = await client.messages.create(model=MODEL, max_tokens=800,
-                                       messages=[{"role": "user", "content": prompt}])
-    text = msg.content[0].text
+    message = await client.messages.create(
+        model=MODEL_QUALITY,
+        max_tokens=800,
+        system=[{"type": "text", "text": BASE_EVALUATOR_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+        messages=[{
+            "role": "user",
+            "content": (
+                f"あなたは{context}の面接官です。{bg}\n\n"
+                f"【これまでの面接】\n{history_text}\n\n"
+                f"【今回の質問】{current_q}\n【応募者の回答】{user_answer}\n\n"
+                f"{'最後の質問なので締めくくりを。next_questionはnull。' if is_last else f'次（第{question_number+1}問）の質問をしてください。'}\n"
+                f'{{"score":75,"feedback":"コメント","good_points":"良い点","improve_point":"改善点","message":"返答+次の質問","next_question":"次の質問またはnull","is_finished":{str(is_last).lower()}}} のJSONのみ返してください。'
+            )
+        }],
+    )
+    text = message.content[0].text
     s, e = text.find("{"), text.rfind("}") + 1
     return json.loads(text[s:e])
 
 
 async def mock_interview_report(history: list[dict], interview_type: str) -> dict:
+    import json
     context = INTERVIEW_TYPE_CONTEXT.get(interview_type, "面接")
     qa_text = "\n".join([
-        f"Q{i+1}: {h['question']}\nA{i+1}: {h['answer']}\n評価: {h.get('score', '?')}点"
+        f"Q{i+1}: {h['question']}\nA{i+1}: {h['answer']}\n評価: {h.get('score','?')}点"
         for i, h in enumerate(history)
     ])
 
-    prompt = f"""あなたは{context}のキャリアコーチです。模擬面接全体の総評を出してください。
-
-【面接記録】
-{qa_text}
-
-以下のJSON形式で総評を作成してください：
-{{
-  "overall_score": 72,
-  "grade": "B",
-  "summary": "総評（3〜4文）",
-  "strengths": ["強み1", "強み2", "強み3"],
-  "improvements": ["改善点1（具体的に）", "改善点2", "改善点3"],
-  "action_items": ["次の面接までにやること1", "やること2", "やること3"]
-}}
-
-gradeはS/A/B/C/Dで。"""
-
-    msg = await client.messages.create(model=MODEL, max_tokens=1000,
-                                       messages=[{"role": "user", "content": prompt}])
-    text = msg.content[0].text
+    message = await client.messages.create(
+        model=MODEL_QUALITY,
+        max_tokens=1000,
+        system=[{"type": "text", "text": BASE_EVALUATOR_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+        messages=[{
+            "role": "user",
+            "content": (
+                f"面接種別: {context}\n\n【面接記録】\n{qa_text}\n\n"
+                '模擬面接全体の総評を {"overall_score":72,"grade":"B","summary":"総評","strengths":[],"improvements":[],"action_items":[]} のJSONで返してください。gradeはS/A/B/C/D。'
+            )
+        }],
+    )
+    text = message.content[0].text
     s, e = text.find("{"), text.rfind("}") + 1
     return json.loads(text[s:e])
-
-
-async def generate_session_feedback(qa_pairs: list[dict], interview_type: str) -> dict:
-    context = INTERVIEW_TYPE_CONTEXT.get(interview_type, "面接")
-
-    qa_text = "\n".join([
-        f"Q{i+1}: {qa['question']}\nA{i+1}: {qa.get('user_answer', '（回答なし）')}"
-        for i, qa in enumerate(qa_pairs)
-    ])
-
-    prompt = f"""あなたは{context}のキャリアコーチです。面接セッション全体を振り返り、総合フィードバックを提供してください。
-
-面接種別: {interview_type}
-
-【面接の質問と回答】
-{qa_text}
-
-以下のJSON形式で総合フィードバックを作成してください：
-{{
-  "overall_score": 72,
-  "summary": "セッション全体の総評（3〜4文）",
-  "strengths": [
-    "セッションを通じて見られた強み1",
-    "セッションを通じて見られた強み2",
-    "セッションを通じて見られた強み3"
-  ],
-  "improvements": [
-    "改善が必要な点1（具体的に）",
-    "改善が必要な点2（具体的に）",
-    "改善が必要な点3（具体的に）"
-  ],
-  "action_items": [
-    "次の面接までにやること1",
-    "次の面接までにやること2",
-    "次の面接までにやること3"
-  ]
-}}
-
-スコアは0〜100点。具体的で実行可能なフィードバックを。"""
-
-    message = await client.messages.create(
-        model=MODEL,
-        max_tokens=1500,
-        messages=[{"role": "user", "content": prompt}],
-    )
-
-    text = message.content[0].text
-    start = text.find("{")
-    end = text.rfind("}") + 1
-    return json.loads(text[start:end])
