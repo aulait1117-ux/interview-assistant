@@ -249,11 +249,25 @@ async def generate_hints_stream(
 ):
     """ストリーミング用（リアルタイム表示のためテキスト出力を維持）"""
     context = INTERVIEW_TYPE_CONTEXT.get(interview_type, "面接")
-    bg_text = f"\n応募者の背景: {user_background}" if user_background else ""
+    bg_section = f"\n\n【応募者の情報】\n{user_background}" if user_background else ""
+
+    prompt = f"""面接種別: {context}{bg_section}
+
+【面接官の質問】
+「{question}」
+
+上記の応募者情報を活かして、面接でそのまま話せる模範回答を生成してください。
+
+条件:
+- 応募者の実体験・スキル・背景を具体的に盛り込む（情報がない場合は汎用的でよい）
+- 面接官に向けてそのまま読み上げられる自然な話し言葉の敬語
+- 結論から入り、理由・具体例・締めの順（200〜300字程度）
+- 英語面接の場合は英語で生成する
+- 余計な説明・前置きは一切不要。回答本文のみ返す"""
 
     async with client.messages.stream(
         model=MODEL_FAST,
-        max_tokens=400,
+        max_tokens=600,
         system=[{
             "type": "text",
             "text": BASE_COACH_SYSTEM,
@@ -261,7 +275,7 @@ async def generate_hints_stream(
         }],
         messages=[{
             "role": "user",
-            "content": f"面接種別: {context}{bg_text}\n\n質問: {question}\n\n模範回答（150字程度、敬語、英語面接は英語）を直接テキストで返してください。"
+            "content": prompt
         }],
     ) as stream:
         async for text in stream.text_stream:
