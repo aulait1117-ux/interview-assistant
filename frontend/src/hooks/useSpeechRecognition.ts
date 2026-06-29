@@ -10,109 +10,109 @@ interface SpeechRecognitionHook {
   resetTranscript: () => void
 }
 
-interface ISpeechRecognition extends EventTarget {
-  continuous: boolean
-  interimResults: boolean
-  lang: string
-  start(): void
-  stop(): void
-  onresult: ((event: ISpeechRecognitionEvent) => void) | null
-  onend: (() => void) | null
-  onerror: ((event: { error: string }) => void) | null
-}
-
-interface ISpeechRecognitionEvent {
-  resultIndex: number
-  results: { isFinal: boolean; [0]: { transcript: string } }[]
-}
-
-declare global {
-  interface Window {
-    SpeechRecognition: new () => ISpeechRecognition
-    webkitSpeechRecognition: new () => ISpeechRecognition
-  }
-}
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 export function useSpeechRecognition(
-  interviewType: InterviewType,
+  _interviewType: InterviewType,
   onQuestionDetected: (question: string) => void
 ): SpeechRecognitionHook {
   const [isListening, setIsListening] = useState(false)
   const [transcript, setTranscript] = useState('')
   const [detectedQuestion, setDetectedQuestion] = useState('')
-  const recognitionRef = useRef<ISpeechRecognition | null>(null)
-  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const accumulatedRef = useRef('')
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+  const onQuestionDetectedRef = useRef(onQuestionDetected)
+  onQuestionDetectedRef.current = onQuestionDetected
 
-  const handleResult = useCallback((event: ISpeechRecognitionEvent) => {
-    let interim = ''
-    let final = ''
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      const t = event.results[i][0].transcript
-      if (event.results[i].isFinal) {
-        final += t
-      } else {
-        interim += t
-      }
-    }
+  const startListening = useCallback(async () => {
+    if (mediaRecorderRef.current) return
 
-    if (final) {
-      accumulatedRef.current += final + ' '
-      setTranscript(accumulatedRef.current)
-
-      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
-      silenceTimerRef.current = setTimeout(() => {
-        const q = accumulatedRef.current.trim()
-        if (q.length > 5) {
-          setDetectedQuestion(q)
-          onQuestionDetected(q)
-          accumulatedRef.current = ''
-          setTranscript('')
-        }
-      }, 1800)
-    } else {
-      setTranscript(accumulatedRef.current + interim)
-    }
-  }, [onQuestionDetected])
-
-  const startListening = useCallback(() => {
-    const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition
-    if (!SpeechRecognitionAPI) {
-      alert('このブラウザは音声認識に対応していません。Chrome を使用してください。')
+    let stream: MediaStream
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    } catch {
+      alert('マイクへのアクセスが許可されていません。')
       return
     }
 
-    const recognition = new SpeechRecognitionAPI()
-    recognition.continuous = true
-    recognition.interimResults = true
-    recognition.lang = 'ja-JP'
+    chunksRef.current = []
+    const recorder = new MediaRecorder(stream)
 
-    recognition.onresult = handleResult
-    recognition.onend = () => {
-      if (recognitionRef.current === recognition) {
-        recognition.start()
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunksRef.current.push(e.data)
+    }
+
+    recorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop())
+      const mimeType = recorder.mimeType || 'audio/webm'
+      const blob = new Blob(chunksRef.current, { type: mimeType })
+      chunksRef.current = []
+
+      setTranscript(`音声取得: ${blob.size}バイト`)
+      if (blob.size < 100) {
+        setTranscript(`音声が短すぎます (${blob.size}バイト)。マイクがミュートになっていないか確認してください。`)
+        return
+      }
+
+      setTranscript('文字起こし中...')
+      try {
+        const formData = new FormData()
+        formData.append('audio', blob, 'recording.webm')
+        const res = await fetch(`${API_BASE}/api/speech/transcribe`, {
+          method: 'POST',
+          body: formData,
+        })
+        const data = await res.json()
+        const text: string = data.text ?? ''
+        setTranscript(text)
+        if (text.length > 0) {
+          setDetectedQuestion(text)
+          onQuestionDetectedRef.current(text)
+        }
+      } catch (e) {
+        console.error('Transcription error:', e)
+        setTranscript('文字起こしに失敗しました')
       }
     }
-    recognition.onerror = (e) => {
-      if (e.error !== 'no-speech') console.error('Speech error:', e.error)
+
+    recorder.onerror = (e) => {
+      setTranscript('録音エラー: ' + String(e))
     }
 
-    recognitionRef.current = recognition
-    recognition.start()
+    mediaRecorderRef.current = recorder
+    try {
+      recorder.start(250)
+    } catch (e) {
+      setTranscript('録音開始エラー: ' + String(e))
+      mediaRecorderRef.current = null
+      return
+    }
     setIsListening(true)
-  }, [handleResult])
+    setTranscript('録音中...')
+  }, [])
 
   const stopListening = useCallback(() => {
-    recognitionRef.current?.stop()
-    recognitionRef.current = null
+    const recorder = mediaRecorderRef.current
+    if (!recorder) return
+    mediaRecorderRef.current = null
     setIsListening(false)
-    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
+    setTranscript('処理中...')
+    try {
+      if (recorder.state === 'recording') {
+        recorder.requestData()
+        recorder.stop()
+      } else {
+        setTranscript(`録音状態エラー: ${recorder.state}`)
+      }
+    } catch (e) {
+      setTranscript('停止エラー: ' + String(e))
+    }
   }, [])
 
   const resetTranscript = useCallback(() => {
-    accumulatedRef.current = ''
     setTranscript('')
     setDetectedQuestion('')
+    chunksRef.current = []
   }, [])
 
   return { isListening, transcript, detectedQuestion, startListening, stopListening, resetTranscript }

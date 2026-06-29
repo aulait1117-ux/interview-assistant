@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage, desktopCapturer, session } = require('electron');
 const path = require('path');
 const url = require('url');
 
@@ -52,6 +52,11 @@ function createOverlayWindow() {
   overlayWindow.on('closed', () => {
     overlayWindow = null;
   });
+
+  // 開発時: DevToolsを別ウィンドウで自動起動（デバッグ用）
+  if (isDev) {
+    overlayWindow.webContents.openDevTools({ mode: 'detach' });
+  }
 
   // ロード失敗時のリトライ（開発時のみ）
   overlayWindow.webContents.on('did-fail-load', () => {
@@ -378,6 +383,22 @@ ipcMain.on('overlay:hide', () => {
   }
 });
 
+// オーバーレイ自身を前面に持ってくる
+ipcMain.on('overlay:focus-self', () => {
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.show();
+    overlayWindow.focus();
+    overlayWindow.setAlwaysOnTop(true, 'screen-saver');
+  }
+});
+
+// 透明領域のマウス貫通（パネル外はクリックをZoom等に通す）
+ipcMain.on('overlay:set-ignore-mouse', (_event, ignore) => {
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.setIgnoreMouseEvents(ignore, { forward: true });
+  }
+});
+
 // オーバーレイウィンドウの透明度を変更
 ipcMain.on('overlay:set-opacity', (_event, opacity) => {
   if (overlayWindow && !overlayWindow.isDestroyed()) {
@@ -399,17 +420,78 @@ ipcMain.handle('overlay:get-position', () => {
   return { x, y };
 });
 
+// オーバーレイウィンドウのサイズを取得
+ipcMain.handle('overlay:get-size', () => {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return { width: 420, height: 520 };
+  const [width, height] = overlayWindow.getSize();
+  return { width, height };
+});
+
+// オーバーレイウィンドウのサイズと位置を同時に設定（全辺リサイズ用）
+ipcMain.on('overlay:set-bounds', (_event, { x, y, width, height }) => {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  overlayWindow.setBounds({ x, y, width, height }, false);
+});
+
+// カーソル追跡リサイズ（ウィンドウ外でもマウス座標を取得できる）
+let resizeInterval = null;
+ipcMain.on('overlay:resize-start', (_event, { dir, startX, startY, origX, origY, origW, origH }) => {
+  if (resizeInterval) clearInterval(resizeInterval);
+  resizeInterval = setInterval(() => {
+    if (!overlayWindow || overlayWindow.isDestroyed()) { clearInterval(resizeInterval); return; }
+    const pt = screen.getCursorScreenPoint();
+    const dx = pt.x - startX;
+    const dy = pt.y - startY;
+    let nx = origX, ny = origY, nw = origW, nh = origH;
+    if (dir.includes('e')) nw = Math.max(280, origW + dx);
+    if (dir.includes('w')) { nw = Math.max(280, origW - dx); nx = origX + (origW - nw); }
+    if (dir.includes('s')) nh = Math.max(200, origH + dy);
+    if (dir.includes('n')) { nh = Math.max(200, origH - dy); ny = origY + (origH - nh); }
+    overlayWindow.setBounds({ x: Math.round(nx), y: Math.round(ny), width: Math.round(nw), height: Math.round(nh) }, false);
+  }, 16);
+});
+
+ipcMain.on('overlay:resize-end', () => {
+  if (resizeInterval) { clearInterval(resizeInterval); resizeInterval = null; }
+});
+
 // --- アプリのライフサイクル ---
 
+const OVERLAY_ONLY = process.env.OVERLAY_ONLY === 'true'
+
+// 認証トークンをメインプロセスで保持（オーバーレイへのリレー用）
+let _authToken = null;
+ipcMain.on('auth:set-token', (_event, token) => { _authToken = token; });
+ipcMain.handle('auth:get-token', () => _authToken);
+
+// IPC: システム音声キャプチャ用のデスクトップソース一覧を返す
+ipcMain.handle('desktop:get-sources', async () => {
+  const sources = await desktopCapturer.getSources({ types: ['screen'] })
+  return sources.map(s => ({ id: s.id, name: s.name }))
+})
+
 app.whenReady().then(() => {
-  createWindow();
+  // getUserMedia でデスクトップ音声キャプチャを許可する
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    callback(true)
+  })
+  session.defaultSession.setPermissionCheckHandler(() => true)
+
+  // getDisplayMedia をインターセプト: ダイアログなしでシステム音声（WASAPIループバック）を返す
+  session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
+    desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
+      callback({ video: sources[0], audio: 'loopback' })
+    }).catch(() => callback({}))
+  })
+
+  if (!OVERLAY_ONLY) createWindow();
   createOverlayWindow();
   createTray();
 
   // macOS: Dock アイコンクリックでウィンドウを再作成
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+      if (!OVERLAY_ONLY) createWindow();
       createOverlayWindow();
     }
   });

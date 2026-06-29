@@ -1,9 +1,12 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { InterviewType, HintResponse } from '../types'
-import { useSpeechRecognition } from '../hooks/useSpeechRecognition'
+import { useSystemAudioRecognition as useSpeechRecognition } from '../hooks/useSystemAudioRecognition'
 import FeedbackPanel from './FeedbackPanel'
 import { useAuth } from '../hooks/useAuth'
-import OverlayButton, { sendHintToOverlay } from './OverlayButton'
+import { sendHintToOverlay } from './OverlayButton'
+
+const SHORTCUT_KEY_STORAGE = 'interview_shortcut_key'
+const getShortcutKey = () => localStorage.getItem(SHORTCUT_KEY_STORAGE) ?? 'F1'
 
 
 interface Props {
@@ -22,7 +25,7 @@ interface QARecord {
 }
 
 export default function RealtimeMode({ sessionId, interviewType, userBackground, onBack, onShowPricing }: Props) {
-  const { user } = useAuth()
+  const { user, token } = useAuth()
   const [currentHints, setCurrentHints] = useState<HintResponse | null>(null)
   const [currentQuestion, setCurrentQuestion] = useState('')
   const [isLoading, setIsLoading] = useState(false)
@@ -36,25 +39,20 @@ export default function RealtimeMode({ sessionId, interviewType, userBackground,
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamingAnswer, setStreamingAnswer] = useState('')
 
-  // --- オーバーレイ同期 (Electron IPC + ブラウザ BroadcastChannel) ---
-  // ストリーミング中・完了後にオーバーレイウィンドウへヒントを送信する
-  useEffect(() => {
-    const payload = {
-      question: currentQuestion,
-      answer: currentHints?.answer ?? '',
-      isStreaming,
-      streamingText: streamingAnswer,
-    }
-
-    // Electron IPC 経由で送信
-    const api = window.electronAPI
-    if (api?.sendHintsToOverlay) {
-      api.sendHintsToOverlay(payload)
-    }
-
-    // ブラウザ BroadcastChannel 経由でも常に送信（オーバーレイページが開いていれば届く）
-    sendHintToOverlay(payload)
-  }, [currentQuestion, currentHints, isStreaming, streamingAnswer])
+  // インラインヒントポップアップ
+  const [showHintPopup, setShowHintPopup] = useState(false)
+  const [popupPos, setPopupPos] = useState<{ x: number; y: number }>(() => {
+    try { return JSON.parse(localStorage.getItem('hint_popup_pos') ?? 'null') ?? { x: 0, y: 0 } } catch { return { x: 0, y: 0 } }
+  })
+  const [popupSize, setPopupSize] = useState<{ w: number; h: number }>(() => {
+    try { return JSON.parse(localStorage.getItem('hint_popup_size') ?? 'null') ?? { w: 560, h: 420 } } catch { return { w: 560, h: 420 } }
+  })
+  const [popupOpacity, setPopupOpacity] = useState<number>(() => {
+    const v = parseFloat(localStorage.getItem('hint_popup_opacity') ?? '')
+    return isNaN(v) ? 0.92 : v
+  })
+  const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null)
+  const resizeRef = useRef<{ startX: number; startY: number; origW: number; origH: number; origX: number; origY: number; dir: string } | null>(null)
 
   // 戻るボタン
   const handleBack = useCallback(() => {
@@ -73,7 +71,10 @@ export default function RealtimeMode({ sessionId, interviewType, userBackground,
     try {
       const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/interview/hint-stream`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
           session_id: sessionId,
           question,
@@ -121,10 +122,38 @@ export default function RealtimeMode({ sessionId, interviewType, userBackground,
       console.error(e)
       setIsStreaming(false)
     }
-  }, [sessionId, interviewType, userBackground])
+  }, [sessionId, interviewType, userBackground, token])
 
   const { isListening, transcript, startListening, stopListening } =
     useSpeechRecognition(interviewType, handleQuestionDetected)
+
+  // --- オーバーレイ同期 (Electron IPC + ブラウザ BroadcastChannel) ---
+  // ストリーミング中・完了後にオーバーレイウィンドウへヒントを送信する
+  useEffect(() => {
+    const payload = {
+      question: currentQuestion,
+      answer: currentHints?.answer ?? '',
+      isStreaming,
+      streamingText: streamingAnswer,
+    }
+
+    // Electron IPC 経由で送信
+    const api = window.electronAPI
+    if (api?.sendHintsToOverlay) {
+      api.sendHintsToOverlay(payload)
+    }
+
+    // ブラウザ BroadcastChannel 経由でも常に送信（オーバーレイページが開いていれば届く）
+    sendHintToOverlay(payload)
+
+    // バックエンド経由でElectronオーバーレイへ中継（isRecordingも含む）
+    fetch('/api/overlay/hint', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...payload, isRecording: isListening }),
+    }).catch(() => {})
+
+  }, [currentQuestion, currentHints, isStreaming, streamingAnswer, isListening])
 
   // 残り時間が0になったら自動停止（管理者はスキップ）
   useEffect(() => {
@@ -134,13 +163,37 @@ export default function RealtimeMode({ sessionId, interviewType, userBackground,
     }
   }, [user?.minutes_left, user?.is_admin, stopListening])
 
+  // オーバーレイからのコントロールコマンド受信（record-toggle）
+  useEffect(() => {
+    const es = new EventSource('http://localhost:8000/api/overlay/main-stream')
+    es.onmessage = (event) => {
+      try {
+        const parsed = JSON.parse(event.data)
+        if (parsed.ping || parsed.connected) return
+        if (parsed.command === 'record-toggle') {
+          if (isListening) {
+            stopListening()
+          } else {
+            startListening()
+          }
+        }
+        // オーバーレイが文字起こしした質問を受信してヒント生成
+        if (parsed.command === 'set-transcript' && parsed.text) {
+          handleQuestionDetected(parsed.text)
+        }
+      } catch {}
+    }
+    return () => es.close()
+  }, [isListening, startListening, stopListening])
+
   // 機能2: ショートカットキー
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
 
-      if (e.code === 'Space' || e.key.toLowerCase() === 'r') {
+      const shortcut = getShortcutKey()
+      if (e.key === shortcut || e.code === 'Space' || e.key.toLowerCase() === 'r') {
         e.preventDefault()
         if (isListening) {
           stopListening()
@@ -155,6 +208,59 @@ export default function RealtimeMode({ sessionId, interviewType, userBackground,
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [isListening, startListening, stopListening, handleBack])
+
+  const handlePopupResizeStart = useCallback((e: React.MouseEvent, dir: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    resizeRef.current = { startX: e.clientX, startY: e.clientY, origW: popupSize.w, origH: popupSize.h, origX: popupPos.x, origY: popupPos.y, dir }
+    const onMove = (ev: MouseEvent) => {
+      if (!resizeRef.current) return
+      const { startX, startY, origW, origH, origX, origY, dir: d } = resizeRef.current
+      const dx = ev.clientX - startX
+      const dy = ev.clientY - startY
+      let newW = origW, newH = origH, newX = origX, newY = origY
+      if (d.includes('e')) newW = Math.max(280, origW + dx)
+      if (d.includes('w')) { newW = Math.max(280, origW - dx); newX = origX + (origW - newW) }
+      if (d.includes('s')) newH = Math.max(200, origH + dy)
+      if (d.includes('n')) { newH = Math.max(200, origH - dy); newY = origY + (origH - newH) }
+      setPopupSize({ w: newW, h: newH })
+      setPopupPos({ x: newX, y: newY })
+      localStorage.setItem('hint_popup_size', JSON.stringify({ w: newW, h: newH }))
+      localStorage.setItem('hint_popup_pos', JSON.stringify({ x: newX, y: newY }))
+    }
+    const onUp = () => {
+      resizeRef.current = null
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [popupSize, popupPos])
+
+  const handlePopupDragStart = useCallback((e: React.MouseEvent) => {
+    dragRef.current = { startX: e.clientX, startY: e.clientY, origX: popupPos.x, origY: popupPos.y }
+    const onMove = (ev: MouseEvent) => {
+      if (!dragRef.current) return
+      const newPos = {
+        x: dragRef.current.origX + ev.clientX - dragRef.current.startX,
+        y: dragRef.current.origY + ev.clientY - dragRef.current.startY,
+      }
+      setPopupPos(newPos)
+      localStorage.setItem('hint_popup_pos', JSON.stringify(newPos))
+    }
+    const onUp = () => {
+      dragRef.current = null
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    e.preventDefault()
+  }, [popupPos])
+
+  const handleToggleHintWindow = useCallback(() => {
+    fetch('/api/overlay/show', { method: 'POST' }).catch(() => {})
+  }, [])
 
   const saveCurrentAnswer = () => {
     if (!currentQuestion || !currentHints) return
@@ -217,8 +323,6 @@ export default function RealtimeMode({ sessionId, interviewType, userBackground,
           <span className="interview-type">{interviewType}</span>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          {/* オーバーレイボタン: Electron/ブラウザ両対応 */}
-          <OverlayButton />
           <button
             className="feedback-btn"
             onClick={() => { stopListening(); setShowFeedback(true) }}
@@ -237,7 +341,8 @@ export default function RealtimeMode({ sessionId, interviewType, userBackground,
               onClick={isListening ? stopListening : startListening}
             >
               <span className="mic-icon">{isListening ? '⏹' : '🎙️'}</span>
-              <span>{isListening ? '録音停止' : 'マイク開始'}</span>
+              <span>{isListening ? '録音停止' : '録音開始'}</span>
+              <span style={{ fontSize: 11, opacity: 0.6, marginLeft: 4 }}>[{getShortcutKey()}]</span>
             </button>
             {isListening && (
               <div className="listening-indicator">
@@ -272,14 +377,137 @@ export default function RealtimeMode({ sessionId, interviewType, userBackground,
         </div>
 
         {/* メインエリア */}
-        <div style={{ position: 'relative', overflow: 'hidden' }}>
-          {!isStreaming && !currentHints && !isLoading && (
-            <div className="empty-hints" style={{ height: '100%' }}>
-              <div className="empty-icon">🎯</div>
-              <p>面接官の質問を話しかけてください</p>
-              <p className="empty-sub">音声を自動認識してヒントを表示します</p>
+        <div style={{ position: 'relative', overflow: 'hidden', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1 }}>
+          <button
+            onClick={handleToggleHintWindow}
+            style={{
+              padding: '16px 32px',
+              fontSize: 18,
+              fontWeight: 700,
+              background: 'rgba(99,102,241,0.85)',
+              color: '#fff',
+              border: '2px solid #6366f1',
+              borderRadius: 14,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              boxShadow: isStreaming ? '0 0 24px rgba(99,102,241,0.6)' : '0 4px 16px rgba(99,102,241,0.3)',
+              transition: 'all 0.2s',
+              animation: isStreaming ? 'pulse-btn 1.2s infinite' : 'none',
+            }}
+          >
+            <span style={{ fontSize: 22 }}>💡</span>
+            💡 ヒントを見る
+            {isStreaming && <span style={{ fontSize: 12, opacity: 0.8 }}>生成中...</span>}
+          </button>
+
+          {/* インラインヒントポップアップ（半透明・ドラッグ・全辺リサイズ） */}
+          {showHintPopup && (
+            <div
+              style={{
+                position: 'fixed',
+                left: `calc(50% + ${popupPos.x}px)`,
+                top: `calc(50% + ${popupPos.y}px)`,
+                transform: 'translate(-50%, -50%)',
+                width: popupSize.w,
+                height: popupSize.h,
+                minWidth: 280,
+                minHeight: 200,
+                background: `rgba(10, 15, 30, ${popupOpacity})`,
+                border: '1px solid rgba(99,102,241,0.5)',
+                borderRadius: 16,
+                boxShadow: '0 8px 40px rgba(0,0,0,0.7)',
+                overflow: 'hidden',
+                display: 'flex',
+                flexDirection: 'column',
+                zIndex: 9999,
+              }}
+            >
+              {/* リサイズハンドル（全辺・全角） */}
+              {(['n','s','e','w','ne','nw','se','sw'] as const).map(dir => {
+                const isCorner = dir.length === 2
+                const cursorMap: Record<string, string> = { n:'ns-resize', s:'ns-resize', e:'ew-resize', w:'ew-resize', ne:'ne-resize', nw:'nw-resize', se:'se-resize', sw:'sw-resize' }
+                const style: React.CSSProperties = {
+                  position: 'absolute', zIndex: 10,
+                  ...(dir.includes('n') ? { top: 0 } : {}),
+                  ...(dir.includes('s') ? { bottom: 0 } : {}),
+                  ...(dir.includes('e') ? { right: 0 } : {}),
+                  ...(dir.includes('w') ? { left: 0 } : {}),
+                  ...(isCorner ? { width: 12, height: 12 } : dir === 'n' || dir === 's' ? { left: 12, right: 12, height: 6 } : { top: 12, bottom: 12, width: 6 }),
+                  cursor: cursorMap[dir],
+                }
+                return <div key={dir} style={style} onMouseDown={e => handlePopupResizeStart(e, dir)} />
+              })}
+
+              {/* ドラッグ可能なヘッダー */}
+              <div
+                onMouseDown={handlePopupDragStart}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  padding: '10px 14px',
+                  background: 'rgba(99,102,241,0.2)',
+                  borderBottom: '1px solid rgba(99,102,241,0.3)',
+                  flexShrink: 0, cursor: 'grab', userSelect: 'none',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span>💡</span>
+                  <span style={{ color: '#a5b4fc', fontWeight: 600, fontSize: 14 }}>ヒントパネル</span>
+                  {isStreaming && <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#34d399', display: 'inline-block', animation: 'pulse-btn 1s infinite' }} />}
+                </div>
+                <button
+                  onMouseDown={e => e.stopPropagation()}
+                  onClick={() => setShowHintPopup(false)}
+                  style={{ background: 'rgba(239,68,68,0.25)', border: 'none', borderRadius: 5, color: '#fca5a5', fontSize: 12, padding: '3px 9px', cursor: 'pointer' }}
+                >✕ 閉じる</button>
+              </div>
+
+              {/* 本文 */}
+              <div style={{ overflowY: 'auto', padding: '14px', display: 'flex', flexDirection: 'column', gap: 12, flex: 1 }}>
+                {!currentQuestion && !isStreaming ? (
+                  <div style={{ textAlign: 'center', padding: '28px 12px', color: '#475569' }}>
+                    <div style={{ fontSize: 32, marginBottom: 8 }}>🎯</div>
+                    <p style={{ margin: 0, fontSize: 13 }}>面接官の質問を話しかけてください</p>
+                    <p style={{ margin: '4px 0 0', fontSize: 11, color: '#334155' }}>音声認識後にここにヒントが表示されます</p>
+                  </div>
+                ) : (
+                  <>
+                    {currentQuestion && (
+                      <div style={{ background: 'rgba(30,58,138,0.4)', borderLeft: '3px solid #3b82f6', borderRadius: 8, padding: '10px 14px' }}>
+                        <p style={{ margin: '0 0 4px', fontSize: 10, color: '#93c5fd', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em' }}>検出された質問</p>
+                        <p style={{ margin: 0, fontSize: 14, color: '#e2e8f0', lineHeight: 1.6 }}>{currentQuestion}</p>
+                      </div>
+                    )}
+                    {(streamingAnswer || currentHints?.answer) && (
+                      <div>
+                        <p style={{ margin: '0 0 6px', fontSize: 10, color: '#86efac', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em' }}>模範回答</p>
+                        <div style={{ background: 'rgba(5,46,22,0.4)', borderLeft: '3px solid #22c55e', borderRadius: 8, padding: '12px 14px' }}>
+                          <p style={{ margin: 0, fontSize: 14, color: '#dcfce7', lineHeight: 1.8, whiteSpace: 'pre-wrap' }}>
+                            {isStreaming ? streamingAnswer : currentHints?.answer}
+                            {isStreaming && <span style={{ display: 'inline-block', width: 2, height: '1em', background: '#22c55e', marginLeft: 2, animation: 'blink 0.8s step-end infinite', verticalAlign: 'text-bottom' }} />}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {/* 透明度スライダー（下部固定） */}
+              <div
+                onMouseDown={e => e.stopPropagation()}
+                style={{ flexShrink: 0, padding: '8px 14px', borderTop: '1px solid rgba(99,102,241,0.2)', display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(10,15,30,0.5)' }}
+              >
+                <span style={{ color: '#64748b', fontSize: 11, whiteSpace: 'nowrap' }}>透明度</span>
+                <input type="range" min={0.1} max={1} step={0.05} value={popupOpacity}
+                  onChange={e => { const v = parseFloat(e.target.value); setPopupOpacity(v); localStorage.setItem('hint_popup_opacity', String(v)) }}
+                  style={{ flex: 1, accentColor: '#6366f1', cursor: 'pointer' }} />
+                <span style={{ color: '#64748b', fontSize: 11, width: 32, textAlign: 'right' }}>{Math.round(popupOpacity * 100)}%</span>
+              </div>
             </div>
           )}
+
         </div>
 
         {qaHistory.length > 0 && (

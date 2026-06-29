@@ -13,6 +13,9 @@ contextBridge.exposeInMainWorld('overlayAPI', {
   /** オーバーレイを非表示にする */
   hide: () => ipcRenderer.send('overlay:hide'),
 
+  /** オーバーレイを前面に表示する */
+  focus: () => ipcRenderer.send('overlay:focus-self'),
+
   /**
    * ドラッグによるウィンドウ移動
    * @param {number} deltaX
@@ -33,6 +36,26 @@ contextBridge.exposeInMainWorld('overlayAPI', {
    */
   getPosition: () => ipcRenderer.invoke('overlay:get-position'),
 
+  /**
+   * 現在のウィンドウサイズを取得
+   * @returns {Promise<{ width: number, height: number }>}
+   */
+  getSize: () => ipcRenderer.invoke('overlay:get-size'),
+
+  /**
+   * ウィンドウの位置とサイズを同時に設定（全辺リサイズ用）
+   */
+  setBounds: (x, y, width, height) => ipcRenderer.send('overlay:set-bounds', { x, y, width, height }),
+
+  /** カーソル追跡リサイズ開始（ウィンドウ外でも動作） */
+  resizeStart: (params) => ipcRenderer.send('overlay:resize-start', params),
+
+  /** カーソル追跡リサイズ終了 */
+  resizeEnd: () => ipcRenderer.send('overlay:resize-end'),
+
+  /** パネル外の透明領域でマウスを貫通させる */
+  setIgnoreMouse: (ignore) => ipcRenderer.send('overlay:set-ignore-mouse', ignore),
+
   // --- ヒントデータ受信 ---
 
   /**
@@ -45,6 +68,12 @@ contextBridge.exposeInMainWorld('overlayAPI', {
     ipcRenderer.on('overlay:hints-updated', listener);
     return () => ipcRenderer.removeListener('overlay:hints-updated', listener);
   },
+
+  /** デスクトップソース一覧を取得（システム音声キャプチャ用） */
+  getDesktopSources: () => ipcRenderer.invoke('desktop:get-sources'),
+
+  /** メインプロセスから認証トークンを取得 */
+  getToken: () => ipcRenderer.invoke('auth:get-token'),
 
   // --- 環境情報 ---
 

@@ -540,6 +540,7 @@ textarea:focus { outline: none; border-color: var(--primary); }
 .spinner { width: 36px; height: 36px; border: 3px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin .8s linear infinite; }
 .spinner.large { width: 52px; height: 52px; }
 @keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse-btn { 0%, 100% { box-shadow: 0 0 16px rgba(99,102,241,0.5); } 50% { box-shadow: 0 0 32px rgba(99,102,241,0.9); } }
 
 .hints-content { display: flex; flex-direction: column; gap: 16px; }
 /* 透過パネル内: 背景を半透明にして浮遊感を維持しながら文字は鮮明に */

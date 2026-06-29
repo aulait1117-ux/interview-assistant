@@ -99,6 +99,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // --- 環境情報 ---
 
+  /** 認証トークンをメインプロセスへ送信（オーバーレイ共有用） */
+  sendToken: (token) => ipcRenderer.send('auth:set-token', token),
+
+  /** デスクトップソース一覧を取得（システム音声キャプチャ用） */
+  getDesktopSources: () => ipcRenderer.invoke('desktop:get-sources'),
+
   /** 実行環境が Electron かどうかを示すフラグ */
   isElectron: true,
 

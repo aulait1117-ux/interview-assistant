@@ -25,6 +25,10 @@ export default function App() {
   const [session, setSession] = useState<SessionState | null>(null)
   const [showAuthModal, setShowAuthModal] = useState(false)
   const [showPricing, setShowPricing] = useState(false)
+  const [paymentSuccess, setPaymentSuccess] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search)
+    return params.get('plan')
+  })
   // Electron環境では起動時にウィジェット（コンパクト）モードで開始する
   const [isCompact, setIsCompact] = useState<boolean>(
     () => !!(typeof window !== 'undefined' && window.electronAPI?.isElectron)
@@ -51,12 +55,21 @@ export default function App() {
 
   const handleStart = async (profile: UserProfile) => {
     const background = buildBackground(profile)
-    const res = await axios.post<{ session_id: string }>('/api/interview/session', {
-      interview_type: selectedType,
-      user_background: background,
-    })
-    setSession({ sessionId: res.data.session_id, interviewType: selectedType, profile, mode: 'realtime' })
-    setAppMode('realtime')
+    try {
+      const res = await axios.post<{ session_id: string }>('/api/interview/session', {
+        interview_type: selectedType,
+        user_background: background,
+      })
+      setSession({ sessionId: res.data.session_id, interviewType: selectedType, profile, mode: 'realtime' })
+      setAppMode('realtime')
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err) && err.response?.status === 401) {
+        setShowAuthModal(true)
+      } else {
+        alert('バックエンドに接続できませんでした。サーバーが起動しているか確認してください。')
+        console.error('handleStart error:', err)
+      }
+    }
   }
 
   const handleBack = () => {
@@ -64,11 +77,44 @@ export default function App() {
     setSession(null)
   }
 
+  // 決済完了後のプラン有効化
+  useEffect(() => {
+    if (!paymentSuccess || !auth.user) return
+    axios.post('/api/billing/payment/success', null, { params: { plan: paymentSuccess } })
+      .then(() => auth.refreshUser())
+      .catch(() => {})
+    window.history.replaceState({}, '', window.location.pathname)
+  }, [paymentSuccess, auth.user])
+
   if (auth.isLoading) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#94a3b8' }}>
         読み込み中...
       </div>
+    )
+  }
+
+  if (paymentSuccess) {
+    const PLAN_NAMES: Record<string, string> = {
+      day1h: '1日1時間プラン',
+      day24h: '1日使い放題プラン',
+      monthly: '月額使い放題プラン',
+      monthly_discount: '月額プラン（割引）',
+    }
+    return (
+      <AuthContext.Provider value={auth}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', gap: 16, color: '#e2e8f0', textAlign: 'center', padding: 24 }}>
+          <div style={{ fontSize: 64 }}>🎉</div>
+          <h1 style={{ fontSize: 24, fontWeight: 700, margin: 0 }}>決済完了！</h1>
+          <p style={{ color: '#94a3b8', margin: 0 }}>{PLAN_NAMES[paymentSuccess] ?? paymentSuccess} が有効になりました</p>
+          <button
+            onClick={() => setPaymentSuccess(null)}
+            style={{ marginTop: 8, padding: '10px 28px', background: 'var(--primary, #6366f1)', color: '#fff', border: 'none', borderRadius: 8, fontSize: 15, cursor: 'pointer' }}
+          >
+            アプリに戻る
+          </button>
+        </div>
+      </AuthContext.Provider>
     )
   }
 

@@ -86,8 +86,8 @@ async def _stripe_checkout(payment_id: str, plan: str, plan_info: dict, user: di
                 "quantity": 1,
             }],
             mode="payment",
-            success_url=f"{FRONTEND_URL}/payment/success?session_id={{CHECKOUT_SESSION_ID}}&plan={plan}",
-            cancel_url=f"{FRONTEND_URL}/pricing",
+            success_url=f"{FRONTEND_URL}/?plan={plan}&session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{FRONTEND_URL}/",
             metadata={"user_id": user["id"], "plan": plan, "payment_id": payment_id},
         )
         await db.execute(

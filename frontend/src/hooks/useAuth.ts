@@ -57,6 +57,9 @@ export function useAuthProvider(): AuthContextType {
   useEffect(() => {
     if (token) {
       setAuthHeader(token)
+      ;(window as any).electronAPI?.sendToken?.(token)
+      // オーバーレイ用: バックエンド経由でトークンを共有（既存トークンも同期）
+      fetch('/api/auth/sync-token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) }).catch(() => {})
       refreshUser().finally(() => setIsLoading(false))
     } else {
       setIsLoading(false)
@@ -69,6 +72,9 @@ export function useAuthProvider(): AuthContextType {
     localStorage.setItem('token', t)
     setToken(t)
     setAuthHeader(t)
+    ;(window as any).electronAPI?.sendToken?.(t)
+    // オーバーレイ用: バックエンド経由でトークンを共有
+    fetch('/api/auth/sync-token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: t }) }).catch(() => {})
     await refreshUser()
   }
 

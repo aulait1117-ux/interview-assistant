@@ -2,7 +2,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from database import init_db
-from routes import interview, feedback, auth, billing
+from routes import interview, feedback, auth, billing, overlay, speech
+from routes import audio_capture
 
 
 @asynccontextmanager
@@ -30,6 +31,9 @@ app.include_router(auth.router)
 app.include_router(billing.router)
 app.include_router(interview.router)
 app.include_router(feedback.router)
+app.include_router(overlay.router)
+app.include_router(speech.router)
+app.include_router(audio_capture.router)
 
 
 @app.get("/")

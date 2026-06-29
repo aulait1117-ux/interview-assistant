@@ -104,6 +104,21 @@ async def get_hint_stream(
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+@router.post("/overlay-hint-stream")
+async def overlay_hint_stream(req: HintRequest):
+    """オーバーレイ専用: ローカルアプリのため認証なしでヒントを生成"""
+    async def event_generator():
+        async for chunk in claude_service.generate_hints_stream(
+            question=req.question,
+            interview_type=req.interview_type,
+            user_background=req.user_background,
+        ):
+            yield f"data: {chunk}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
 @router.post("/save-answer")
 async def save_answer(req: SaveAnswerRequest, db: Connection = Depends(get_db)):
     await db.execute(

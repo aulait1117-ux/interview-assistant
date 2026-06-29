@@ -23,7 +23,21 @@ const GRADE_OPTIONS = ['大学1年', '大学2年', '大学3年', '大学4年', '
 
 const STORAGE_KEY = 'interview_setup_profile'
 const COMPANY_HISTORY_KEY = 'interview_company_history'
+const URL_STORAGE_KEY = 'interview_company_urls'
+const SHORTCUT_KEY_STORAGE = 'interview_shortcut_key'
 const MAX_HISTORY = 10
+
+export function loadShortcutKey(): string {
+  return localStorage.getItem(SHORTCUT_KEY_STORAGE) ?? 'F1'
+}
+
+function loadUrlsFromStorage(): string[] {
+  try {
+    const saved = localStorage.getItem(URL_STORAGE_KEY)
+    if (saved) return JSON.parse(saved) as string[]
+  } catch {}
+  return ['', '']
+}
 
 const EMPTY_PROFILE: UserProfile = {
   name: '', university: '', faculty: '', grade: '大学3年',
@@ -121,12 +135,29 @@ export default function SetupForm({ onStart, onBack }: Props) {
   const [step, setStep] = useState<'user' | 'company'>('user')
   const [companyInfo, setCompanyInfo] = useState<CompanyInfo | null>(null)
   const [isResearching, setIsResearching] = useState(false)
-  const [urls, setUrls] = useState(['', ''])
+  const [urls, setUrls] = useState<string[]>(loadUrlsFromStorage)
 
   // 履歴の状態
   const [history, setHistory] = useState<string[]>(loadHistoryFromStorage)
   const [showHistory, setShowHistory] = useState(false)
   const companyInputRef = useRef<HTMLDivElement>(null)
+
+  // ショートカットキー設定
+  const [shortcutKey, setShortcutKey] = useState<string>(loadShortcutKey)
+  const [capturingKey, setCapturingKey] = useState(false)
+
+  useEffect(() => {
+    if (!capturingKey) return
+    const handleCapture = (e: KeyboardEvent) => {
+      e.preventDefault()
+      if (e.key === 'Escape') { setCapturingKey(false); return }
+      setShortcutKey(e.key)
+      localStorage.setItem(SHORTCUT_KEY_STORAGE, e.key)
+      setCapturingKey(false)
+    }
+    window.addEventListener('keydown', handleCapture)
+    return () => window.removeEventListener('keydown', handleCapture)
+  }, [capturingKey])
 
   // profileが変わるたびにlocalStorageへ保存
   useEffect(() => {
@@ -141,6 +172,13 @@ export default function SetupForm({ onStart, onBack }: Props) {
   useEffect(() => {
     saveHistoryToStorage(history)
   }, [history])
+
+  // URLが変わるたびにlocalStorageへ保存
+  useEffect(() => {
+    try {
+      localStorage.setItem(URL_STORAGE_KEY, JSON.stringify(urls))
+    } catch {}
+  }, [urls])
 
   // 外側クリックで履歴を閉じる
   const handleOutsideClick = useCallback((e: MouseEvent) => {
@@ -460,6 +498,33 @@ export default function SetupForm({ onStart, onBack }: Props) {
                 )}
               </div>
             )}
+
+            {/* ショートカットキー設定 */}
+            <div style={{ margin: '12px 0', padding: '12px 16px', background: 'rgba(99,102,241,0.08)', borderRadius: 10, border: '1px solid rgba(99,102,241,0.2)' }}>
+              <div style={{ fontSize: 13, color: '#94a3b8', marginBottom: 8, fontWeight: 600 }}>🎙️ 録音ショートカットキー</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <button
+                  onClick={() => setCapturingKey(true)}
+                  style={{
+                    padding: '6px 16px',
+                    borderRadius: 8,
+                    border: capturingKey ? '2px solid #6366f1' : '2px solid rgba(99,102,241,0.3)',
+                    background: capturingKey ? 'rgba(99,102,241,0.2)' : 'rgba(15,23,42,0.6)',
+                    color: capturingKey ? '#a5b4fc' : '#e2e8f0',
+                    fontSize: 14,
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    minWidth: 80,
+                    outline: 'none',
+                  }}
+                >
+                  {capturingKey ? 'キーを押して...' : shortcutKey}
+                </button>
+                <span style={{ fontSize: 12, color: '#64748b' }}>
+                  {capturingKey ? 'Escでキャンセル' : 'クリックして変更'}
+                </span>
+              </div>
+            </div>
 
             <div className="mode-buttons">
               <button

@@ -10,6 +10,9 @@ from services.auth_service import (
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
+# オーバーレイ用トークン共有（ChromeとElectronのlocalStorageが別のため）
+_overlay_token: str | None = None
+
 
 class RegisterRequest(BaseModel):
     email: str
@@ -93,3 +96,21 @@ async def me(user=Depends(get_current_user)):
         "minutes_left": minutes_left,
         "can_use_discount": bool(user["used_day_plan"]),
     }
+
+
+class SyncTokenRequest(BaseModel):
+    token: str
+
+
+@router.post("/sync-token")
+async def sync_token(req: SyncTokenRequest):
+    """ChromeのlocalStorageトークンをバックエンド経由でオーバーレイへ共有"""
+    global _overlay_token
+    _overlay_token = req.token
+    return {"ok": True}
+
+
+@router.get("/overlay-token")
+async def get_overlay_token():
+    """オーバーレイがトークンを取得するエンドポイント"""
+    return {"token": _overlay_token}
