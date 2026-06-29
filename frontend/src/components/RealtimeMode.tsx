@@ -4,6 +4,9 @@ import FeedbackPanel from './FeedbackPanel'
 import { useAuth } from '../hooks/useAuth'
 import { sendHintToOverlay } from './OverlayButton'
 
+const SHORTCUT_KEY_STORAGE = 'interview_shortcut_key'
+const getShortcutKey = () => localStorage.getItem(SHORTCUT_KEY_STORAGE) ?? 'F1'
+
 
 interface Props {
   sessionId: string
@@ -151,14 +154,33 @@ export default function RealtimeMode({ sessionId, interviewType, userBackground,
     }
   }, [user?.minutes_left, user?.is_admin])
 
-  // Escapeで戻る
+  // ショートカットキーで録音ON/OFF（バックエンド経由）
+  const [isRecording, setIsRecording] = useState(false)
+  const toggleRecording = useCallback(() => {
+    if (isRecording) {
+      fetch('/api/audio/stop', { method: 'POST' }).catch(() => {})
+      setIsRecording(false)
+    } else {
+      fetch('/api/audio/start', { method: 'POST' }).catch(() => {})
+      setIsRecording(true)
+    }
+  }, [isRecording])
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') handleBack()
+      const target = e.target as HTMLElement
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+      const shortcut = getShortcutKey()
+      if (e.key === shortcut || e.key.toLowerCase() === 'r') {
+        e.preventDefault()
+        toggleRecording()
+      } else if (e.key === 'Escape') {
+        handleBack()
+      }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [handleBack])
+  }, [handleBack, toggleRecording])
 
   const handlePopupResizeStart = useCallback((e: React.MouseEvent, dir: string) => {
     e.preventDefault()
