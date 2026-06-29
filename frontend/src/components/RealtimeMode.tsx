@@ -1,12 +1,8 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { InterviewType, HintResponse } from '../types'
-import { useSystemAudioRecognition as useSpeechRecognition } from '../hooks/useSystemAudioRecognition'
 import FeedbackPanel from './FeedbackPanel'
 import { useAuth } from '../hooks/useAuth'
 import { sendHintToOverlay } from './OverlayButton'
-
-const SHORTCUT_KEY_STORAGE = 'interview_shortcut_key'
-const getShortcutKey = () => localStorage.getItem(SHORTCUT_KEY_STORAGE) ?? 'F1'
 
 
 interface Props {
@@ -124,11 +120,7 @@ export default function RealtimeMode({ sessionId, interviewType, userBackground,
     }
   }, [sessionId, interviewType, userBackground, token])
 
-  const { isListening, transcript, startListening, stopListening } =
-    useSpeechRecognition(interviewType, handleQuestionDetected)
-
   // --- オーバーレイ同期 (Electron IPC + ブラウザ BroadcastChannel) ---
-  // ストリーミング中・完了後にオーバーレイウィンドウへヒントを送信する
   useEffect(() => {
     const payload = {
       question: currentQuestion,
@@ -137,77 +129,36 @@ export default function RealtimeMode({ sessionId, interviewType, userBackground,
       streamingText: streamingAnswer,
     }
 
-    // Electron IPC 経由で送信
-    const api = window.electronAPI
+    const api = (window as any).electronAPI
     if (api?.sendHintsToOverlay) {
       api.sendHintsToOverlay(payload)
     }
 
-    // ブラウザ BroadcastChannel 経由でも常に送信（オーバーレイページが開いていれば届く）
     sendHintToOverlay(payload)
 
-    // バックエンド経由でElectronオーバーレイへ中継（isRecordingも含む）
     fetch('/api/overlay/hint', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...payload, isRecording: isListening }),
+      body: JSON.stringify({ ...payload, isRecording: false }),
     }).catch(() => {})
 
-  }, [currentQuestion, currentHints, isStreaming, streamingAnswer, isListening])
+  }, [currentQuestion, currentHints, isStreaming, streamingAnswer])
 
-  // 残り時間が0になったら自動停止（管理者はスキップ）
+  // 残り時間が0になったら終了（管理者はスキップ）
   useEffect(() => {
     if (user && !user.is_admin && user.minutes_left === 0) {
-      stopListening()
       setTimeExpired(true)
     }
-  }, [user?.minutes_left, user?.is_admin, stopListening])
+  }, [user?.minutes_left, user?.is_admin])
 
-  // オーバーレイからのコントロールコマンド受信（record-toggle）
-  useEffect(() => {
-    const es = new EventSource('http://localhost:8000/api/overlay/main-stream')
-    es.onmessage = (event) => {
-      try {
-        const parsed = JSON.parse(event.data)
-        if (parsed.ping || parsed.connected) return
-        if (parsed.command === 'record-toggle') {
-          if (isListening) {
-            stopListening()
-          } else {
-            startListening()
-          }
-        }
-        // オーバーレイが文字起こしした質問を受信してヒント生成
-        if (parsed.command === 'set-transcript' && parsed.text) {
-          handleQuestionDetected(parsed.text)
-        }
-      } catch {}
-    }
-    return () => es.close()
-  }, [isListening, startListening, stopListening])
-
-  // 機能2: ショートカットキー
+  // Escapeで戻る
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
-
-      const shortcut = getShortcutKey()
-      if (e.key === shortcut || e.code === 'Space' || e.key.toLowerCase() === 'r') {
-        e.preventDefault()
-        if (isListening) {
-          stopListening()
-        } else {
-          startListening()
-        }
-      } else if (e.key === 'Escape') {
-        handleBack()
-      }
+      if (e.key === 'Escape') handleBack()
     }
-
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [isListening, startListening, stopListening, handleBack])
+  }, [handleBack])
 
   const handlePopupResizeStart = useCallback((e: React.MouseEvent, dir: string) => {
     e.preventDefault()
@@ -335,30 +286,6 @@ export default function RealtimeMode({ sessionId, interviewType, userBackground,
 
       <div className="realtime-layout">
         <div className="voice-panel">
-          <div className="voice-controls">
-            <button
-              className={`mic-btn ${isListening ? 'active' : ''}`}
-              onClick={isListening ? stopListening : startListening}
-            >
-              <span className="mic-icon">{isListening ? '⏹' : '🎙️'}</span>
-              <span>{isListening ? '録音停止' : '録音開始'}</span>
-              <span style={{ fontSize: 11, opacity: 0.6, marginLeft: 4 }}>[{getShortcutKey()}]</span>
-            </button>
-            {isListening && (
-              <div className="listening-indicator">
-                <span className="pulse" />
-                聞き取り中...
-              </div>
-            )}
-          </div>
-
-          {transcript && (
-            <div className="transcript-box">
-              <p className="transcript-label">認識中</p>
-              <p className="transcript-text">{transcript}</p>
-            </div>
-          )}
-
           <div className="manual-input">
             <p className="section-label">手動で質問を入力</p>
             <div className="manual-row">

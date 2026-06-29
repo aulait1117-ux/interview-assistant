@@ -138,9 +138,9 @@ export default function OverlayApp() {
                     console.error('[Overlay] hint error:', e)
                     setHintData(prev => prev ? { ...prev, isStreaming: false, answer: String(e) } : prev)
                   }
-                }, 3000)
+                }, 1500)
               } catch { /* ignore */ }
-            }, 2000)
+            }, 1000)
           })
           .catch(e => console.error('[Overlay] 録音開始失敗:', e))
       })
