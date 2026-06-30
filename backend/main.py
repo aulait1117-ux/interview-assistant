@@ -3,7 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from database import init_db
 from routes import interview, feedback, auth, billing, overlay, speech
-from routes import audio_capture
+try:
+    from routes import audio_capture
+    _audio_capture_available = True
+except ImportError:
+    _audio_capture_available = False
 
 
 @asynccontextmanager
@@ -34,7 +38,8 @@ app.include_router(interview.router)
 app.include_router(feedback.router)
 app.include_router(overlay.router)
 app.include_router(speech.router)
-app.include_router(audio_capture.router)
+if _audio_capture_available:
+    app.include_router(audio_capture.router)
 
 
 @app.get("/")
