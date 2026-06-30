@@ -1,10 +1,13 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage, desktopCapturer, session } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage, session } = require('electron');
+// desktopCapturer はレンダラー専用（Electron 21+）。mainプロセスではnullとして扱う
+let desktopCapturer = null;
+try { desktopCapturer = require('electron').desktopCapturer; } catch (_) {}
 const path = require('path');
 const url = require('url');
 
-// 開発環境か本番環境かを判定（最初に宣言して全関数から参照できるようにする）
+// 開発環境か本番環境かを判定
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 
 
@@ -467,11 +470,12 @@ ipcMain.handle('auth:get-token', () => _authToken);
 
 // IPC: システム音声キャプチャ用のデスクトップソース一覧を返す
 ipcMain.handle('desktop:get-sources', async () => {
+  if (!desktopCapturer) return []
   const sources = await desktopCapturer.getSources({ types: ['screen'] })
   return sources.map(s => ({ id: s.id, name: s.name }))
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(() => { try {
   // getUserMedia でデスクトップ音声キャプチャを許可する
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
     callback(true)
@@ -479,11 +483,13 @@ app.whenReady().then(() => {
   session.defaultSession.setPermissionCheckHandler(() => true)
 
   // getDisplayMedia をインターセプト: ダイアログなしでシステム音声（WASAPIループバック）を返す
-  session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
-    desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
-      callback({ video: sources[0], audio: 'loopback' })
-    }).catch(() => callback({}))
-  })
+  if (desktopCapturer) {
+    session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
+      desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
+        callback({ video: sources[0], audio: 'loopback' })
+      }).catch(() => callback({}))
+    })
+  }
 
   if (!OVERLAY_ONLY) createWindow();
   createOverlayWindow();
@@ -496,6 +502,10 @@ app.whenReady().then(() => {
       createOverlayWindow();
     }
   });
+} catch (e) {
+  require('fs').writeFileSync(require('path').join(require('os').homedir(), 'electron-error.log'), String(e) + '\n' + e.stack);
+  app.quit();
+}
 });
 
 // 全ウィンドウが閉じられてもトレイが存在する場合はアプリを終了しない
