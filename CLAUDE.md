@@ -6,10 +6,17 @@
 3. ユーザーの指示を待つ（説明不要、コードは全部実装済み）
 
 ## 起動方法
+
+### 本番（推奨）：全サービス一括起動
 ```powershell
-# バックエンド（ポート8000）
-cd "C:\企業道\02_開発部\interview_assistant\backend"
-py -m uvicorn main:app --port 8000 --reload
+powershell -File "C:\企業道\02_開発部\interview_assistant\scripts\start-all.ps1"
+```
+バックエンドはクラッシュしても自動で再起動します。
+
+### 個別起動（開発時）
+```powershell
+# バックエンド（自動再起動あり）
+powershell -File "C:\企業道\02_開発部\interview_assistant\scripts\start-backend.ps1"
 
 # フロントエンド（ポート5173）
 Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "npm run dev" -WorkingDirectory "C:\企業道\02_開発部\interview_assistant\frontend" -NoNewWindow

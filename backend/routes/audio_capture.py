@@ -34,6 +34,7 @@ _whisper_executor = ThreadPoolExecutor(max_workers=1)
 _last_rms: float = 0.0
 _chunks_processed: int = 0
 _last_chunk_time: float = 0.0           # watchdog 用: 最後にchunkを処理した時刻
+_start_time: float = 0.0                # watchdog 用: 最後に_do_startを呼んだ時刻
 _whisper_calls: int = 0
 _whisper_busy: bool = False
 _user_background: str = ""
@@ -100,10 +101,11 @@ def _record_worker():
 
     SAMPLERATE = 16000
     CHUNK_FRAMES = int(SAMPLERATE * 0.1)   # 100ms単位
-    RECORD_TIMEOUT = 3.0                   # これ以上 record() が帰らなければフリーズとみなす
+    RECORD_TIMEOUT = 1.5                   # これ以上 record() が帰らなければフリーズとみなす
     SPEECH_THRESHOLD = 0.001
     SILENCE_CHUNKS = 4
     MAX_SPEECH_CHUNKS = 20
+    consecutive_timeouts = 0
 
     def submit_transcription(audio: np.ndarray):
         global _whisper_busy
@@ -152,8 +154,12 @@ def _record_worker():
                     t.start()
                     try:
                         tag, val = result_q.get(timeout=RECORD_TIMEOUT)
+                        consecutive_timeouts = 0
                     except q_mod.Empty:
-                        print(f"[audio_capture] recorder.record() が {RECORD_TIMEOUT}秒 タイムアウト → recorder 再作成")
+                        consecutive_timeouts += 1
+                        wait = min(consecutive_timeouts * 1.0, 5.0)
+                        print(f"[audio_capture] recorder.record() タイムアウト #{consecutive_timeouts} → {wait}秒待って再作成")
+                        time.sleep(wait)  # ゾンビスレッドがデバイスを解放するまで待つ
                         break  # with ブロックを抜けて外側ループで recorder を再生成
 
                     if tag == 'err':
@@ -199,13 +205,14 @@ def _record_worker():
 
 def _do_start(loop: asyncio.AbstractEventLoop):
     """録音スレッドを安全に起動する（同期関数・_start_lock保持下で呼ぶ）"""
-    global _recording, _record_thread, _transcript_queue, _loop, _last_chunk_time
+    global _recording, _record_thread, _transcript_queue, _loop, _last_chunk_time, _start_time
     _stop_event.set()
     if _record_thread is not None and _record_thread.is_alive():
-        _record_thread.join(timeout=2.0)
+        _record_thread.join(timeout=3.0)
     _loop = loop
     _transcript_queue = asyncio.Queue()
-    _last_chunk_time = time.time()
+    _last_chunk_time = 0.0      # 実チャンクが届くまでは0のまま（watchdog の誤検知防止）
+    _start_time = time.time()   # 起動時刻を記録（初回フリーズ検出用）
     _stop_event.clear()
     _recording = True
     _record_thread = threading.Thread(target=_record_worker, daemon=True)
@@ -215,19 +222,25 @@ def _do_start(loop: asyncio.AbstractEventLoop):
 
 def _start_watchdog():
     """録音スレッドが凍結したら自動再起動する watchdog（バックグラウンド常駐）"""
-    FREEZE_TIMEOUT = 20.0   # この秒数 chunk が来なければ凍結とみなす
+    FREEZE_TIMEOUT = 12.0    # この秒数 chunk が来なければ凍結とみなす
+    INITIAL_GRACE = 15.0     # 起動直後はこの秒数まで待つ（Whisperモデルロード時間を考慮）
     while True:
-        time.sleep(8)
+        time.sleep(5)
         if not _recording or _loop is None:
             continue
+        now = time.time()
         if _last_chunk_time == 0.0:
+            # まだ1チャンクも届いていない → 起動からGRACE秒を超えたら異常とみなす
+            if _start_time > 0 and (now - _start_time) > INITIAL_GRACE:
+                print(f"[watchdog] 起動から{INITIAL_GRACE}秒 初回チャンクなし → 強制再起動")
+                with _start_lock:
+                    _do_start(_loop)
             continue
-        elapsed = time.time() - _last_chunk_time
+        elapsed = now - _last_chunk_time
         if elapsed > FREEZE_TIMEOUT:
             print(f"[watchdog] 録音スレッドが {elapsed:.0f}秒 凍結 → 強制再起動")
             with _start_lock:
-                loop = _loop
-                _do_start(loop)
+                _do_start(_loop)
 
 _watchdog_started = False
 
@@ -236,9 +249,11 @@ async def start_capture():
     global _watchdog_started
     loop = asyncio.get_event_loop()
 
-    # 既に正常録音中なら何もしない
+    # 既に正常録音中なら何もしない（_last_chunk_timeが0=起動直後の場合はGRACE内のみスキップ）
     if _recording and _record_thread is not None and _record_thread.is_alive():
-        if _last_chunk_time > 0 and time.time() - _last_chunk_time < 20:
+        if _last_chunk_time > 0 and time.time() - _last_chunk_time < 12:
+            return {"ok": True, "status": "already_recording"}
+        if _last_chunk_time == 0.0 and _start_time > 0 and time.time() - _start_time < 15:
             return {"ok": True, "status": "already_recording"}
 
     acquired = _start_lock.acquire(blocking=False)
