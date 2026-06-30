@@ -14,6 +14,9 @@ export interface UserProfile {
   industry: string
   jobType: string
   motivation: string
+  // パーソナライズ
+  jobTitle: string
+  interviewTypePref: string
 }
 
 export interface HintResponse {

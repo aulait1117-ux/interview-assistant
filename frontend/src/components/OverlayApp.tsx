@@ -1,5 +1,34 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 
+// 「▶ 推測:」から質問部分だけを抽出（コンポーネント外に置くことでクロージャ問題を回避）
+// ① 日本語の質問語尾パターンで止める（優先）、② フォールバック: 30字 + 読点で止める
+function extractPredQ(text: string): string | undefined {
+  const after = text.match(/▶[　 ]*推測[:：][　 ]*「?(.{2,})/)?.[1]
+  if (!after) return undefined
+  const byPattern = after.match(
+    /^(.{2,35}(?:てください|ますか|でしょうか|ありますか|ですか|ください|ませんか|ましたか|いますか|でしたか|みてください|はどうですか|ありませんか|でしょう))/
+  )?.[1]?.replace(/[」].*$/, '').trim()
+  if (byPattern) return byPattern
+  const fallback = after.slice(0, 30).replace(/[、。！？?!\s].*$/, '').trim()
+  return fallback.length >= 4 ? fallback : undefined
+}
+
+// SSEは改行を消すため全テキストが1行になる。
+// 「▶推測:[質問]」を見つけてその直後から取り出す（除去方式は端の1文字を巻き込むことがあるため）
+function filterAnswer(text: string): string {
+  // ▶推測:[質問語尾] が見つかったらその直後を返す
+  const predMatch = text.match(
+    /▶[　 ]*推測[:：][　 ]*「?.{2,35}?(?:てください|ますか|でしょうか|ありますか|ですか|ください|ませんか|ましたか|いますか|でしたか|みてください|はどうですか|ありませんか|でしょう)/
+  )
+  if (predMatch && predMatch.index !== undefined) {
+    return text.slice(predMatch.index + predMatch[0].length).trim()
+  }
+  // ▶推測がまだ来ていない（ストリーミング中の 📋 段階）→ 何も表示しない
+  if (text.includes('📋') || text.startsWith('▶')) return ''
+  // ▶推測なしで直接回答が来た場合はそのまま表示
+  return text.trim()
+}
+
 /** メインアプリから受け取るヒントデータ */
 interface OverlayHintData {
   question: string
@@ -57,6 +86,8 @@ export default function OverlayApp() {
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const accumulatedRef = useRef('')
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // ユーザーが意図的に停止したかどうか（trueの間は自動再開しない）
+  const userWantsRecordingRef = useRef(true)
 
   const apiBase = useMemo(() => 'http://localhost:8000', [])
 
@@ -82,9 +113,11 @@ export default function OverlayApp() {
                 const r2 = await fetch('http://localhost:8000/api/audio/latest')
                 if (!r2.ok) return
                 const data = await r2.json() as { ok: boolean; text: string | null; recording: boolean }
-                // バックエンド再起動後に録音が止まっていたら自動再開
+                // バックエンド再起動後に録音が止まっていたら自動再開（ユーザーが手動停止中は除く）
                 if (data.recording === false) {
-                  fetch('http://localhost:8000/api/audio/start', { method: 'POST' }).catch(() => {})
+                  if (userWantsRecordingRef.current) {
+                    fetch('http://localhost:8000/api/audio/start', { method: 'POST' }).catch(() => {})
+                  }
                   return
                 }
                 if (!data.text) return
@@ -96,6 +129,7 @@ export default function OverlayApp() {
                   const q = accumulatedRef.current.trim()
                   console.log('[Overlay] silence timer fired, q=', q)
                   if (q.length < 5) return
+                  if (!userWantsRecordingRef.current) return  // 手動停止中はヒント生成しない
                   accumulatedRef.current = ''
                   setLiveTranscript('')
                   // まず直接状態を更新（APIなし）
@@ -109,7 +143,9 @@ export default function OverlayApp() {
                         session_id: 'overlay-session',
                         question: q,
                         interview_type: localStorage.getItem('interview_type') || '技術面接',
-                        user_background: null,
+                        user_background: localStorage.getItem('user_background') || null,
+                        job_title: localStorage.getItem('job_title') || null,
+                        interview_type_pref: localStorage.getItem('interview_type_pref') || null,
                       }),
                     })
                     console.log('[Overlay] hint-stream status=', hintRes.status)
@@ -129,11 +165,16 @@ export default function OverlayApp() {
                           const t = line.slice(6)
                           if (t === '[DONE]') continue
                           answer += t
-                          setHintData(prev => prev ? { ...prev, streamingText: answer, isStreaming: true } : prev)
+                          const predQ = extractPredQ(answer)
+                          setHintData(prev => {
+                            if (!prev) return prev
+                            return { ...prev, question: predQ ?? prev.question, streamingText: answer, isStreaming: true }
+                          })
                         }
                       }
                     }
-                    setHintData(prev => prev ? { ...prev, answer, isStreaming: false, streamingText: '' } : prev)
+                    const finalQ = extractPredQ(answer)
+                    setHintData(prev => prev ? { ...prev, answer, isStreaming: false, streamingText: '', ...(finalQ ? { question: finalQ } : {}) } : prev)
                   } catch (e) {
                     console.error('[Overlay] hint error:', e)
                     setHintData(prev => prev ? { ...prev, isStreaming: false, answer: String(e) } : prev)
@@ -196,16 +237,24 @@ export default function OverlayApp() {
             const t = line.slice(6)
             if (t === '[DONE]') continue
             answer += t
-            setHintData(prev => prev ? { ...prev, streamingText: answer, isStreaming: true } : prev)
+            const predMatch = answer.match(/▶[　 ]*推測[:：][　 ]*「?([^「」\n]+)/)
+            setHintData(prev => {
+              if (!prev) return prev
+              const q = predMatch ? predMatch[1].trim().replace(/」.*$/, '') : prev.question
+              return { ...prev, question: q, streamingText: answer, isStreaming: true }
+            })
           }
         }
       }
-      setHintData(prev => prev ? { ...prev, answer, isStreaming: false, streamingText: '' } : prev)
+      const finalMatch = answer.match(/▶[　 ]*推測[:：][　 ]*「?([^「」\n]+)/)
+      const finalQ = finalMatch ? finalMatch[1].trim().replace(/」.*$/, '') : undefined
+      setHintData(prev => prev ? { ...prev, answer, isStreaming: false, streamingText: '', ...(finalQ ? { question: finalQ } : {}) } : prev)
     } catch { /* ignore */ }
   }, [apiBase])
 
   // ---- システム音声キャプチャ（Pythonバックエンド WASAPIループバック・ポーリング） ----
   const startElectronCapture = useCallback(async () => {
+    userWantsRecordingRef.current = true  // 自動再開を許可
     try {
       const res = await fetch(`${apiBase}/api/audio/start`, { method: 'POST' })
       if (!res.ok) return
@@ -239,6 +288,7 @@ export default function OverlayApp() {
   }, [apiBase, fireHint])
 
   const stopElectronCapture = useCallback(async () => {
+    userWantsRecordingRef.current = false  // 自動再開を抑止
     if (pollTimerRef.current) { clearInterval(pollTimerRef.current); pollTimerRef.current = null }
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
     accumulatedRef.current = ''
@@ -397,7 +447,7 @@ export default function OverlayApp() {
 
   // 表示テキストの選択（ストリーミング中は streamingText、完了後は answer）
   const displayText = hintData
-    ? (hintData.isStreaming ? hintData.streamingText : hintData.answer)
+    ? filterAnswer(hintData.isStreaming ? hintData.streamingText : hintData.answer)
     : null
 
   // ブラウザモードでは、ウィンドウ全体が 400x300 の popup なので

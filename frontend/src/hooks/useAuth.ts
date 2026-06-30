@@ -17,6 +17,7 @@ interface AuthContextType {
   token: string | null
   login: (email: string, password: string) => Promise<void>
   register: (email: string, password: string) => Promise<void>
+  loginWithToken: (token: string, userData?: Record<string, unknown>) => void
   logout: () => void
   refreshUser: () => Promise<void>
   isLoading: boolean
@@ -25,6 +26,7 @@ interface AuthContextType {
 export const AuthContext = createContext<AuthContextType>({
   user: null, token: null,
   login: async () => {}, register: async () => {},
+  loginWithToken: () => {},
   logout: () => {}, refreshUser: async () => {},
   isLoading: true,
 })
@@ -87,6 +89,15 @@ export function useAuthProvider(): AuthContextType {
     await refreshUser()
   }
 
+  const loginWithToken = (t: string, _userData?: Record<string, unknown>) => {
+    localStorage.setItem('token', t)
+    setToken(t)
+    setAuthHeader(t)
+    ;(window as any).electronAPI?.sendToken?.(t)
+    fetch('/api/auth/sync-token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: t }) }).catch(() => {})
+    refreshUser()
+  }
+
   const logout = () => {
     localStorage.removeItem('token')
     setToken(null)
@@ -94,5 +105,5 @@ export function useAuthProvider(): AuthContextType {
     setAuthHeader(null)
   }
 
-  return { user, token, login, register, logout, refreshUser, isLoading }
+  return { user, token, login, register, loginWithToken, logout, refreshUser, isLoading }
 }

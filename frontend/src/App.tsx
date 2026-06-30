@@ -16,6 +16,8 @@ interface SessionState {
   interviewType: InterviewType
   profile: UserProfile
   mode: 'realtime'
+  jobTitle: string
+  interviewTypePref: string
 }
 
 export default function App() {
@@ -25,9 +27,11 @@ export default function App() {
   const [session, setSession] = useState<SessionState | null>(null)
   const [showAuthModal, setShowAuthModal] = useState(false)
   const [showPricing, setShowPricing] = useState(false)
-  const [paymentSuccess, setPaymentSuccess] = useState<string | null>(() => {
+  const [paymentSuccess, setPaymentSuccess] = useState<{ plan: string; sessionId: string } | null>(() => {
     const params = new URLSearchParams(window.location.search)
-    return params.get('plan')
+    const plan = params.get('plan')
+    const sessionId = params.get('session_id')
+    return plan && sessionId ? { plan, sessionId } : null
   })
   // Electron環境では起動時にウィジェット（コンパクト）モードで開始する
   const [isCompact, setIsCompact] = useState<boolean>(
@@ -55,12 +59,22 @@ export default function App() {
 
   const handleStart = async (profile: UserProfile) => {
     const background = buildBackground(profile)
+    // オーバーレイ・バックエンドにプロフィールを保存（再起動後も使えるようlocalStorageにも保持）
+    axios.post('/api/audio/set-profile', {
+      user_background: background,
+      job_title: profile.jobTitle || '',
+      interview_type_pref: profile.interviewTypePref || '',
+    }).catch(() => {})
+    localStorage.setItem('user_background', background)
+    localStorage.setItem('job_title', profile.jobTitle || '')
+    localStorage.setItem('interview_type_pref', profile.interviewTypePref || '')
+    localStorage.setItem('interview_type', selectedType || '')
     try {
       const res = await axios.post<{ session_id: string }>('/api/interview/session', {
         interview_type: selectedType,
         user_background: background,
       })
-      setSession({ sessionId: res.data.session_id, interviewType: selectedType, profile, mode: 'realtime' })
+      setSession({ sessionId: res.data.session_id, interviewType: selectedType, profile, mode: 'realtime', jobTitle: profile.jobTitle, interviewTypePref: profile.interviewTypePref })
       setAppMode('realtime')
     } catch (err: unknown) {
       if (axios.isAxiosError(err) && err.response?.status === 401) {
@@ -77,10 +91,12 @@ export default function App() {
     setSession(null)
   }
 
-  // 決済完了後のプラン有効化
+  // 決済完了後のプラン有効化（Stripeセッションを検証してから）
   useEffect(() => {
     if (!paymentSuccess || !auth.user) return
-    axios.post('/api/billing/payment/success', null, { params: { plan: paymentSuccess } })
+    axios.post('/api/billing/payment/success', null, {
+      params: { plan: paymentSuccess.plan, checkout_session_id: paymentSuccess.sessionId },
+    })
       .then(() => auth.refreshUser())
       .catch(() => {})
     window.history.replaceState({}, '', window.location.pathname)
@@ -106,7 +122,7 @@ export default function App() {
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', gap: 16, color: '#e2e8f0', textAlign: 'center', padding: 24 }}>
           <div style={{ fontSize: 64 }}>🎉</div>
           <h1 style={{ fontSize: 24, fontWeight: 700, margin: 0 }}>決済完了！</h1>
-          <p style={{ color: '#94a3b8', margin: 0 }}>{PLAN_NAMES[paymentSuccess] ?? paymentSuccess} が有効になりました</p>
+          <p style={{ color: '#94a3b8', margin: 0 }}>{PLAN_NAMES[paymentSuccess.plan] ?? paymentSuccess.plan} が有効になりました</p>
           <button
             onClick={() => setPaymentSuccess(null)}
             style={{ marginTop: 8, padding: '10px 28px', background: 'var(--primary, #6366f1)', color: '#fff', border: 'none', borderRadius: 8, fontSize: 15, cursor: 'pointer' }}
@@ -164,6 +180,8 @@ export default function App() {
           sessionId={session.sessionId}
           interviewType={session.interviewType}
           userBackground={buildBackground(session.profile)}
+          jobTitle={session.jobTitle}
+          interviewTypePref={session.interviewTypePref}
           onBack={handleBack}
           onShowPricing={() => setShowPricing(true)}
         />
@@ -186,5 +204,7 @@ function buildBackground(p: UserProfile): string {
   if (p.industry) parts.push(`業界/分野: ${p.industry}`)
   if (p.jobType) parts.push(`職種/テーマ: ${p.jobType}`)
   if (p.motivation) parts.push(`志望理由: ${p.motivation}`)
+  if (p.jobTitle) parts.push(`応募職種: ${p.jobTitle}`)
+  if (p.interviewTypePref) parts.push(`面接タイプ: ${p.interviewTypePref}`)
   return parts.join('\n')
 }

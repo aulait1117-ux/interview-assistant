@@ -1,5 +1,6 @@
 import asyncio
 import io
+import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
@@ -24,13 +25,38 @@ def _get_whisper_model():
 
 _recording = False
 _record_thread: threading.Thread | None = None
+_stop_event = threading.Event()
+_start_lock = threading.Lock()           # 二重起動防止
 _transcript_queue: asyncio.Queue | None = None
 _loop: asyncio.AbstractEventLoop | None = None
 _whisper_executor = ThreadPoolExecutor(max_workers=1)
 
 _last_rms: float = 0.0
 _chunks_processed: int = 0
+_last_chunk_time: float = 0.0           # watchdog 用: 最後にchunkを処理した時刻
 _whisper_calls: int = 0
+_whisper_busy: bool = False
+_user_background: str = ""
+_job_title: str = ""
+_interview_type_pref: str = ""
+
+
+def _extract_question_only(text: str) -> str:
+    """転写テキストから最初の質問文だけを取り出す（質問＋回答を丸ごと取った場合の対策）"""
+    import re
+    sentences = re.split(r'(?<=[。！？?!\n])\s*', text.strip())
+    # 質問らしい語尾を持つ短い文を優先
+    q_end = re.compile(r'(てください|ますか|でしょうか|ありますか|何ですか|いただけますか|ください)$')
+    for s in sentences:
+        s = s.strip()
+        if s and q_end.search(s) and len(s) <= 45:
+            return s
+    # 質問パターンが見つからなければ最初の短い文（40字以内）
+    for s in sentences:
+        s = s.strip()
+        if 4 <= len(s) <= 45:
+            return s
+    return text[:45] if len(text) > 45 else text
 
 
 def _transcribe_sync(audio_data: np.ndarray, samplerate: int) -> str:
@@ -39,6 +65,9 @@ def _transcribe_sync(audio_data: np.ndarray, samplerate: int) -> str:
     print(f"[audio_capture] Whisper呼び出し #{_whisper_calls}")
     try:
         model = _get_whisper_model()
+        peak = np.max(np.abs(audio_data))
+        if peak > 0:
+            audio_data = audio_data / peak * 0.9
         buf = io.BytesIO()
         sf.write(buf, audio_data, samplerate, format='WAV', subtype='PCM_16')
         buf.seek(0)
@@ -50,98 +79,183 @@ def _transcribe_sync(audio_data: np.ndarray, samplerate: int) -> str:
         )
         parts = [seg.text.strip() for seg in segments if seg.no_speech_prob < 0.6]
         text = " ".join(parts).strip()
-        if text:
-            print(f"[audio_capture] 文字起こし: {text[:60]}")
-        return text
+        if not text:
+            return ""
+        # 質問文だけを抽出（動画等で質問＋回答が一緒に流れた場合の対策）
+        question = _extract_question_only(text)
+        print(f"[audio_capture] 文字起こし(生): {text[:60]}")
+        if question != text:
+            print(f"[audio_capture] 質問抽出: {question}")
+        return question
     except Exception as e:
         print(f"[audio_capture] Whisperエラー: {e}")
         return ""
 
 
 def _record_worker():
-    """録音とWhisper処理を並列実行（録音を止めずに文字起こし）"""
+    """録音とWhisper処理を並列実行。recorder.record()のフリーズを自己検出して再起動する"""
+    global _last_rms, _chunks_processed, _last_chunk_time
+    import queue as q_mod
     import soundcard as sc
 
     SAMPLERATE = 16000
-    CHUNK_FRAMES = int(SAMPLERATE * 0.5)   # 500ms単位で録音
+    CHUNK_FRAMES = int(SAMPLERATE * 0.1)   # 100ms単位
+    RECORD_TIMEOUT = 3.0                   # これ以上 record() が帰らなければフリーズとみなす
     SPEECH_THRESHOLD = 0.001
-    SILENCE_CHUNKS = 4                      # 2秒間無音でWhisper実行
-    MAX_SPEECH_CHUNKS = 20                  # 最大10秒でWhisper実行
+    SILENCE_CHUNKS = 4
+    MAX_SPEECH_CHUNKS = 20
 
-    mic = None
-    for attempt in range(3):
+    def submit_transcription(audio: np.ndarray):
+        global _whisper_busy
+        if _whisper_busy:
+            print("[audio_capture] Whisperビジー: スキップ")
+            return
+        def run():
+            global _whisper_busy
+            _whisper_busy = True
+            try:
+                text = _transcribe_sync(audio, SAMPLERATE)
+                if text and len(text) > 1 and not _stop_event.is_set() and _loop and _transcript_queue is not None:
+                    asyncio.run_coroutine_threadsafe(_transcript_queue.put(text), _loop)
+            finally:
+                _whisper_busy = False
+        _whisper_executor.submit(run)
+
+    while not _stop_event.is_set():
         try:
             default_speaker = sc.default_speaker()
             mic = sc.get_microphone(id=str(default_speaker.id), include_loopback=True)
-            print(f"[audio_capture] 録音デバイス: {default_speaker.name}")
-            break
+            print(f"[audio_capture] ループバック録音デバイス: {default_speaker.name}")
         except Exception as e:
-            print(f"[audio_capture] デバイス取得失敗 (試行{attempt+1}/3): {e}")
-            import time; time.sleep(1)
-    if mic is None:
-        print("[audio_capture] デバイス取得を3回失敗、録音を中止します")
-        return
+            print(f"[audio_capture] ループバック取得失敗: {e}")
+            time.sleep(2)
+            continue
 
-    speech_buffer: list[np.ndarray] = []
-    silence_count = 0
-    is_speaking = False
+        speech_buffer: list[np.ndarray] = []
+        silence_count = 0
+        is_speaking = False
 
-    def submit_transcription(audio: np.ndarray):
-        """Whisperを別スレッドで実行してキューに積む"""
-        def run():
-            text = _transcribe_sync(audio, SAMPLERATE)
-            if text and len(text) > 1 and _recording and _loop and _transcript_queue is not None:
-                asyncio.run_coroutine_threadsafe(_transcript_queue.put(text), _loop)
-        _whisper_executor.submit(run)
+        try:
+            with mic.recorder(samplerate=SAMPLERATE, channels=1) as recorder:
+                while not _stop_event.is_set():
+                    # recorder.record() が WASAPIフリーズで永久ブロックするのを防ぐため
+                    # 別スレッドで呼び出してタイムアウト付きで待つ
+                    result_q: q_mod.Queue = q_mod.Queue()
 
-    global _last_rms, _chunks_processed
+                    def _do_record():
+                        try:
+                            result_q.put(('ok', recorder.record(numframes=CHUNK_FRAMES)))
+                        except Exception as exc:
+                            result_q.put(('err', exc))
 
-    with mic.recorder(samplerate=SAMPLERATE, channels=1) as recorder:
-        while _recording:
-            chunk = recorder.record(numframes=CHUNK_FRAMES)
-            if not _recording:
-                break
+                    t = threading.Thread(target=_do_record, daemon=True)
+                    t.start()
+                    try:
+                        tag, val = result_q.get(timeout=RECORD_TIMEOUT)
+                    except q_mod.Empty:
+                        print(f"[audio_capture] recorder.record() が {RECORD_TIMEOUT}秒 タイムアウト → recorder 再作成")
+                        break  # with ブロックを抜けて外側ループで recorder を再生成
 
-            rms = float(np.sqrt(np.mean(chunk ** 2)))
-            _last_rms = rms
-            _chunks_processed += 1
+                    if tag == 'err':
+                        print(f"[audio_capture] recorder.record() エラー: {val}")
+                        break
 
-            if rms >= SPEECH_THRESHOLD:
-                speech_buffer.append(chunk)
-                silence_count = 0
-                is_speaking = True
+                    if _stop_event.is_set():
+                        break
 
-                # 最大長に達したら強制的に文字起こし
-                if len(speech_buffer) >= MAX_SPEECH_CHUNKS:
-                    audio = np.concatenate(speech_buffer)
-                    submit_transcription(audio)
-                    speech_buffer = []
-                    is_speaking = False
-            else:
-                if is_speaking:
-                    speech_buffer.append(chunk)
-                    silence_count += 1
-                    if silence_count >= SILENCE_CHUNKS:
-                        # 無音が続いたら文字起こし
-                        audio = np.concatenate(speech_buffer)
-                        submit_transcription(audio)
-                        speech_buffer = []
+                    chunk: np.ndarray = val
+                    rms = float(np.sqrt(np.mean(chunk ** 2)))
+                    _last_rms = rms
+                    _chunks_processed += 1
+                    _last_chunk_time = time.time()
+
+                    if rms >= SPEECH_THRESHOLD:
+                        speech_buffer.append(chunk)
                         silence_count = 0
-                        is_speaking = False
+                        is_speaking = True
+                        if len(speech_buffer) >= MAX_SPEECH_CHUNKS:
+                            submit_transcription(np.concatenate(speech_buffer))
+                            speech_buffer = []
+                            is_speaking = False
+                    else:
+                        if is_speaking:
+                            speech_buffer.append(chunk)
+                            silence_count += 1
+                            if silence_count >= SILENCE_CHUNKS:
+                                submit_transcription(np.concatenate(speech_buffer))
+                                speech_buffer = []
+                                silence_count = 0
+                                is_speaking = False
+
+        except Exception as e:
+            print(f"[audio_capture] recorder 例外: {e}")
+
+        if not _stop_event.is_set():
+            print("[audio_capture] recorder を再作成します...")
+            time.sleep(1)
+
+    print("[audio_capture] 録音スレッド終了")
 
 
-@router.post("/start")
-async def start_capture():
-    global _recording, _record_thread, _transcript_queue, _loop
-
-    if _recording:
-        return {"ok": True, "status": "already_recording"}
-
-    _loop = asyncio.get_event_loop()
+def _do_start(loop: asyncio.AbstractEventLoop):
+    """録音スレッドを安全に起動する（同期関数・_start_lock保持下で呼ぶ）"""
+    global _recording, _record_thread, _transcript_queue, _loop, _last_chunk_time
+    _stop_event.set()
+    if _record_thread is not None and _record_thread.is_alive():
+        _record_thread.join(timeout=2.0)
+    _loop = loop
     _transcript_queue = asyncio.Queue()
+    _last_chunk_time = time.time()
+    _stop_event.clear()
     _recording = True
     _record_thread = threading.Thread(target=_record_worker, daemon=True)
     _record_thread.start()
+    print("[audio_capture] 録音スレッド起動")
+
+
+def _start_watchdog():
+    """録音スレッドが凍結したら自動再起動する watchdog（バックグラウンド常駐）"""
+    FREEZE_TIMEOUT = 20.0   # この秒数 chunk が来なければ凍結とみなす
+    while True:
+        time.sleep(8)
+        if not _recording or _loop is None:
+            continue
+        if _last_chunk_time == 0.0:
+            continue
+        elapsed = time.time() - _last_chunk_time
+        if elapsed > FREEZE_TIMEOUT:
+            print(f"[watchdog] 録音スレッドが {elapsed:.0f}秒 凍結 → 強制再起動")
+            with _start_lock:
+                loop = _loop
+                _do_start(loop)
+
+_watchdog_started = False
+
+@router.post("/start")
+async def start_capture():
+    global _watchdog_started
+    loop = asyncio.get_event_loop()
+
+    # 既に正常録音中なら何もしない
+    if _recording and _record_thread is not None and _record_thread.is_alive():
+        if _last_chunk_time > 0 and time.time() - _last_chunk_time < 20:
+            return {"ok": True, "status": "already_recording"}
+
+    acquired = _start_lock.acquire(blocking=False)
+    if not acquired:
+        return {"ok": True, "status": "start_in_progress"}
+
+    try:
+        await loop.run_in_executor(None, lambda: _do_start(loop))
+    finally:
+        _start_lock.release()
+
+    # watchdog を一度だけ起動
+    if not _watchdog_started:
+        _watchdog_started = True
+        threading.Thread(target=_start_watchdog, daemon=True).start()
+        print("[audio_capture] watchdog 起動")
+
     return {"ok": True, "status": "started"}
 
 
@@ -157,9 +271,10 @@ async def inject_transcript(payload: dict = Body(...)):
 
 @router.post("/stop")
 async def stop_capture():
-    global _recording, _record_thread
+    global _recording
     _recording = False
-    _record_thread = None
+    _stop_event.set()
+    # _record_thread は None にしない → /start でjoinできるよう参照を保持
     return {"ok": True, "status": "stopped"}
 
 
@@ -176,13 +291,33 @@ async def get_latest():
     return {"ok": True, "text": None, "recording": _recording}
 
 
+@router.post("/set-profile")
+async def set_profile(payload: dict = Body(...)):
+    global _user_background, _job_title, _interview_type_pref
+    _user_background = payload.get("user_background", "")
+    _job_title = payload.get("job_title", "")
+    _interview_type_pref = payload.get("interview_type_pref", "")
+    return {"ok": True}
+
+
+@router.get("/get-profile")
+async def get_profile():
+    return {
+        "user_background": _user_background,
+        "job_title": _job_title,
+        "interview_type_pref": _interview_type_pref,
+    }
+
+
 @router.get("/status")
 async def get_status():
     queue_size = _transcript_queue.qsize() if _transcript_queue else 0
+    chunk_age = round(time.time() - _last_chunk_time, 1) if _last_chunk_time > 0 else None
     return {
         "recording": _recording,
         "queue_size": queue_size,
         "last_rms": _last_rms,
         "chunks_processed": _chunks_processed,
         "whisper_calls": _whisper_calls,
+        "last_chunk_age_sec": chunk_age,  # watchdog確認用: 最後のchunkから何秒経ったか
     }

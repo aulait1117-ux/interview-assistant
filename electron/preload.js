@@ -110,4 +110,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   /** プラットフォーム名（'win32' / 'darwin' / 'linux'） */
   platform: process.platform,
+
 });

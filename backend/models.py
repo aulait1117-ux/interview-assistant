@@ -7,6 +7,8 @@ class HintRequest(BaseModel):
     question: str
     interview_type: str
     user_background: Optional[str] = None
+    job_title: Optional[str] = None
+    interview_type_pref: Optional[str] = None  # 1次面接 / 2次面接 / 最終面接 / GD / その他
 
 
 class HintResponse(BaseModel):

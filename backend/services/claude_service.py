@@ -9,8 +9,8 @@ load_dotenv(_here.parent / ".env")
 
 client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
-MODEL_FAST = "claude-haiku-4-5"      # 速度優先（ヒント生成・ストリーミング）
-MODEL_QUALITY = "claude-sonnet-4-6"  # 品質優先（評価・企業研究・フィードバック）
+MODEL_FAST = "claude-haiku-4-5-20251001"  # 速度優先（ヒント生成・ストリーミング）
+MODEL_QUALITY = "claude-sonnet-4-6"       # 品質優先（評価・企業研究・フィードバック）
 
 INTERVIEW_TYPE_CONTEXT = {
     "就活": "日本の新卒就職活動（就活）の面接",
@@ -216,13 +216,33 @@ async def count_tokens(messages: list, system: list | None = None) -> int:
 # ─────────────────────────────────────────────
 # 機能実装
 # ─────────────────────────────────────────────
+def _build_personalize_section(job_title: str | None, interview_type_pref: str | None) -> str:
+    """応募職種・面接タイプのコンテキスト文字列を生成する"""
+    lines = []
+    if job_title:
+        lines.append(f"応募職種: {job_title}")
+    if interview_type_pref:
+        focus_map = {
+            "1次面接": "基本的な自己紹介・モチベーション・ガクチカを重視。コミュニケーション能力が評価される。",
+            "2次面接": "職種理解・スキルマッチ・具体的な業務経験を重視。現場社員が面接官になることが多い。",
+            "最終面接": "企業理解の深さ・長期ビジョン・カルチャーフィットを重視。役員が面接官。",
+            "グループディスカッション": "チームワーク・論理的思考・役割分担（進行役・書記等）を重視。",
+        }
+        focus = focus_map.get(interview_type_pref, "")
+        lines.append(f"面接タイプ: {interview_type_pref}" + (f"（{focus}）" if focus else ""))
+    return ("\n" + "\n".join(lines)) if lines else ""
+
+
 async def generate_hints(
     question: str,
     interview_type: str,
     user_background: str | None,
+    job_title: str | None = None,
+    interview_type_pref: str | None = None,
 ) -> dict:
     context = INTERVIEW_TYPE_CONTEXT.get(interview_type, "面接")
     bg_text = f"\n応募者の背景: {user_background}" if user_background else ""
+    personalize = _build_personalize_section(job_title, interview_type_pref)
 
     message = await client.messages.create(
         model=MODEL_FAST,
@@ -236,7 +256,7 @@ async def generate_hints(
         tool_choice={"type": "tool", "name": "output_hint"},
         messages=[{
             "role": "user",
-            "content": f"面接種別: {context}{bg_text}\n\n質問: {question}\n\n模範回答とポイントを出力してください。"
+            "content": f"面接種別: {context}{personalize}{bg_text}\n\n質問: {question}\n\n模範回答とポイントを出力してください。"
         }],
     )
     return _extract_tool_result(message)
@@ -246,28 +266,50 @@ async def generate_hints_stream(
     question: str,
     interview_type: str,
     user_background: str | None,
+    job_title: str | None = None,
+    interview_type_pref: str | None = None,
 ):
     """ストリーミング用（リアルタイム表示のためテキスト出力を維持）"""
     context = INTERVIEW_TYPE_CONTEXT.get(interview_type, "面接")
     bg_section = f"\n\n【応募者の情報】\n{user_background}" if user_background else ""
+    personalize = _build_personalize_section(job_title, interview_type_pref)
+    personalize_section = f"\n\n【応募職種・面接タイプ】\n{personalize.strip()}" if personalize.strip() else ""
 
-    prompt = f"""面接種別: {context}{bg_section}
+    prompt = f"""面接種別: {context}{personalize_section}{bg_section}
 
-【面接官の質問】
+【音声認識テキスト（Whisper自動文字起こし・誤認識あり）】
 「{question}」
 
-上記の応募者情報を活かして、面接でそのまま話せる模範回答を生成してください。
+音が似た言葉への誤変換例: 長所→聴者、短所→単純、強み→攻め、弱み→悪み 等
 
-条件:
-- 応募者の実体験・スキル・背景を具体的に盛り込む（情報がない場合は汎用的でよい）
-- 面接官に向けてそのまま読み上げられる自然な話し言葉の敬語
-- 結論から入り、理由・具体例・締めの順（200〜300字程度）
-- 英語面接の場合は英語で生成する
-- 余計な説明・前置きは一切不要。回答本文のみ返す"""
+【よくある面接質問（推測候補）】
+- 自己紹介をしてください
+- 強み・長所を教えてください
+- 弱み・短所を教えてください
+- 強みと弱みを教えてください
+- 学生時代に力を入れたこと（ガクチカ）を教えてください
+- 自己PRをしてください
+- なぜ弊社を志望しましたか
+- なぜこの業界・職種を選びましたか
+- 5年後・10年後のビジョンを教えてください
+- チームで取り組んだ経験を教えてください
+- リーダーシップを発揮した経験はありますか
+- 困難・失敗を乗り越えた経験を教えてください
+- 仕事をする上で大切にしていることは何ですか
+- 弊社に貢献できることは何ですか
+- 何か質問はありますか
+
+出力ルール（厳守）:
+- 音が似た誤変換を積極的に補正して質問を推測する
+- 推測できた場合: 1行目に「▶ 推測: 〇〇〇」（質問を30字以内で）と書き、改行して回答本文を書く
+- 推測できない場合: 「聞き取れませんでした」の1行だけ出力して終了
+- 回答本文: 応募者情報を活かした自然な話し言葉の敬語、結論から入り150字程度、面接でそのまま読み上げられる内容のみ
+- マークダウン記法（#・**・_など）は使わない
+- 「▶ 推測:」行以外の前置き・説明・構成解説は一切不要"""
 
     async with client.messages.stream(
         model=MODEL_FAST,
-        max_tokens=600,
+        max_tokens=350,
         system=[{
             "type": "text",
             "text": BASE_COACH_SYSTEM,

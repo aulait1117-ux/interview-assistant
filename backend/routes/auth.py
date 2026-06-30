@@ -1,3 +1,4 @@
+import os
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Header
 from aiosqlite import Connection
@@ -7,6 +8,8 @@ from services.auth_service import (
     hash_password, verify_password, create_token,
     decode_token, decode_token_payload, new_user_id, PLANS
 )
+
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -114,3 +117,55 @@ async def sync_token(req: SyncTokenRequest):
 async def get_overlay_token():
     """オーバーレイがトークンを取得するエンドポイント"""
     return {"token": _overlay_token}
+
+
+class GoogleAuthRequest(BaseModel):
+    id_token: str
+
+
+@router.post("/google")
+async def google_login(body: GoogleAuthRequest, db: Connection = Depends(get_db)):
+    """Google Sign-In IDトークンを検証してJWTを発行する"""
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="Googleログインが設定されていません（GOOGLE_CLIENT_IDが未設定）")
+
+    try:
+        from google.oauth2 import id_token as google_id_token
+        from google.auth.transport import requests as google_requests
+        idinfo = google_id_token.verify_oauth2_token(
+            body.id_token,
+            google_requests.Request(),
+            GOOGLE_CLIENT_ID,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Googleトークンが無効です: {e}")
+
+    google_id = idinfo["sub"]
+    email = idinfo["email"].lower()
+    name = idinfo.get("name", "")
+
+    # google_id で既存ユーザーを検索
+    cursor = await db.execute("SELECT id, is_admin, plan FROM users WHERE google_id = ?", (google_id,))
+    row = await cursor.fetchone()
+    if row:
+        token = create_token(row[0], is_admin=bool(row[2]))
+        return {"token": token, "email": email, "plan": row[2], "is_admin": bool(row[2])}
+
+    # 同メールのメール登録ユーザーがいれば google_id を紐付け
+    cursor = await db.execute("SELECT id, is_admin, plan FROM users WHERE email = ?", (email,))
+    row = await cursor.fetchone()
+    if row:
+        await db.execute("UPDATE users SET google_id = ? WHERE id = ?", (google_id, row[0]))
+        await db.commit()
+        token = create_token(row[0], is_admin=bool(row[2]))
+        return {"token": token, "email": email, "plan": row[2], "is_admin": bool(row[2])}
+
+    # 新規ユーザー作成（password_hash はNULL）
+    user_id = new_user_id()
+    await db.execute(
+        "INSERT INTO users (id, email, password_hash, google_id) VALUES (?, ?, NULL, ?)",
+        (user_id, email, google_id)
+    )
+    await db.commit()
+    token = create_token(user_id, is_admin=False)
+    return {"token": token, "email": email, "plan": "free", "is_admin": False}

@@ -98,8 +98,7 @@ export function useSpeechRecognition(
     setIsListening(false)
     setTranscript('処理中...')
     try {
-      if (recorder.state === 'recording') {
-        recorder.requestData()
+      if (recorder.state !== 'inactive') {
         recorder.stop()
       } else {
         setTranscript(`録音状態エラー: ${recorder.state}`)

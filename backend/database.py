@@ -32,6 +32,11 @@ async def init_db():
             await db.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
         except Exception:
             pass  # カラムが既に存在する場合は無視
+        # マイグレーション: Googleログイン用 google_id カラムを追加
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN google_id TEXT")
+        except Exception:
+            pass  # カラムが既に存在する場合は無視
         await db.execute("""
             CREATE TABLE IF NOT EXISTS payments (
                 id TEXT PRIMARY KEY,

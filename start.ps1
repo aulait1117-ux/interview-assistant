@@ -4,46 +4,36 @@ Write-Host "=== 面接アシスタント起動 ===" -ForegroundColor Cyan
 
 # .env チェック
 if (-not (Test-Path "$PSScriptRoot\.env")) {
-    Write-Host "[ERROR] .env ファイルが見つかりません。.env.example をコピーして設定してください。" -ForegroundColor Red
+    Write-Host "[ERROR] .env ファイルが見つかりません。" -ForegroundColor Red
     exit 1
 }
 
-# フロントエンド起動
-Write-Host "フロントエンド起動中..." -ForegroundColor Green
-$frontend = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "npm run dev" `
-    -WorkingDirectory "$PSScriptRoot\frontend" -PassThru -WindowStyle Hidden
+# バックエンド起動（別ウィンドウ）
+Write-Host "バックエンド起動中..." -ForegroundColor Green
+$backendDir = "$PSScriptRoot\backend"
+Start-Process -FilePath "powershell.exe" `
+    -ArgumentList "-NoExit", "-Command", "py -m uvicorn main:app --port 8000" `
+    -WorkingDirectory $backendDir
 
 Start-Sleep -Seconds 3
-Write-Host "フロントエンド起動完了 → http://localhost:5173" -ForegroundColor Green
 
-# バックエンド自動再起動ループ
-Write-Host "バックエンド起動中（クラッシュ時自動再起動）..." -ForegroundColor Green
-Write-Host "終了するには Ctrl+C を押してください" -ForegroundColor Yellow
+# フロントエンド起動（別ウィンドウ）
+Write-Host "フロントエンド起動中..." -ForegroundColor Green
+Start-Process -FilePath "powershell.exe" `
+    -ArgumentList "-NoExit", "-Command", "npm run dev" `
+    -WorkingDirectory "$PSScriptRoot\frontend"
+
+Start-Sleep -Seconds 5
+
+# Electronオーバーレイ起動（別ウィンドウ）
+Write-Host "Electronオーバーレイ起動中..." -ForegroundColor Green
+Start-Process -FilePath "powershell.exe" `
+    -ArgumentList "-NoExit", "-Command", "npm run overlay:dev" `
+    -WorkingDirectory $PSScriptRoot
+
 Write-Host ""
-
-$backendDir = "$PSScriptRoot\backend"
-$restartCount = 0
-
-try {
-    while ($true) {
-        if ($restartCount -gt 0) {
-            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] バックエンド再起動中... (${restartCount}回目)" -ForegroundColor Yellow
-            Start-Sleep -Seconds 2
-        }
-
-        $backend = Start-Process -FilePath "py" `
-            -ArgumentList "-m", "uvicorn", "main:app", "--port", "8000" `
-            -WorkingDirectory $backendDir -PassThru -WindowStyle Hidden
-
-        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] バックエンド起動 (PID: $($backend.Id))" -ForegroundColor Green
-
-        $backend.WaitForExit()
-        $restartCount++
-        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] バックエンドが停止しました (終了コード: $($backend.ExitCode))" -ForegroundColor Red
-    }
-} finally {
-    Write-Host "シャットダウン中..." -ForegroundColor Cyan
-    Stop-Process -Id $frontend.Id -Force -ErrorAction SilentlyContinue
-    Get-Process -Name "python*" -ErrorAction SilentlyContinue | Stop-Process -Force
-    Write-Host "終了しました" -ForegroundColor Cyan
-}
+Write-Host "=== 起動完了 ===" -ForegroundColor Cyan
+Write-Host "ブラウザ: http://localhost:5173" -ForegroundColor White
+Write-Host "ログイン: aulait11.17@gmail.com / Masa1515" -ForegroundColor White
+Write-Host ""
+Write-Host "終了するには各ウィンドウを閉じてください" -ForegroundColor Yellow

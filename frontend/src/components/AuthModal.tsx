@@ -1,12 +1,16 @@
 import { useState } from 'react'
+import { GoogleLogin } from '@react-oauth/google'
 import { useAuth } from '../hooks/useAuth'
+import axios from 'axios'
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 interface Props {
   onClose: () => void
 }
 
 export default function AuthModal({ onClose }: Props) {
-  const { login, register } = useAuth()
+  const { login, register, loginWithToken } = useAuth()
   const [mode, setMode] = useState<'login' | 'register'>('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -31,6 +35,22 @@ export default function AuthModal({ onClose }: Props) {
     }
   }
 
+  const handleGoogleSuccess = async (credentialResponse: any) => {
+    setError('')
+    setIsLoading(true)
+    try {
+      const res = await axios.post(`${API_BASE}/api/auth/google`, {
+        id_token: credentialResponse.credential,
+      })
+      loginWithToken(res.data.token, res.data)
+      onClose()
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Googleログインに失敗しました')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-card" onClick={e => e.stopPropagation()}>
@@ -49,6 +69,18 @@ export default function AuthModal({ onClose }: Props) {
           >
             新規登録
           </button>
+        </div>
+
+        <div className="google-login-section">
+          <GoogleLogin
+            onSuccess={handleGoogleSuccess}
+            onError={() => setError('Googleログインに失敗しました')}
+            text="signin_with"
+          />
+        </div>
+
+        <div className="auth-divider">
+          <span>または</span>
         </div>
 
         <form onSubmit={handleSubmit} className="auth-form">

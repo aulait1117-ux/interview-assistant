@@ -4,6 +4,7 @@ __pycache__/
 .env
 *.db
 dist/
+dist-electron/
 .venv/
 venv/
 *.egg-info/

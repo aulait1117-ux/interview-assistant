@@ -1,12 +1,16 @@
 import os
 import uuid
 from datetime import datetime, timedelta
+from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, Header
 from aiosqlite import Connection
 from pydantic import BaseModel
+from dotenv import load_dotenv
 from database import get_db
 from routes.auth import get_current_user
 from services.auth_service import PLANS
+
+load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 router = APIRouter(prefix="/api/billing", tags=["billing"])
 
@@ -152,8 +156,41 @@ async def stripe_webhook(request: Request, db: Connection = Depends(get_db)):
 
 
 @router.post("/payment/success")
-async def payment_success(plan: str, user=Depends(get_current_user), db: Connection = Depends(get_db)):
-    await _activate_plan(user["id"], plan, None, db)
+async def payment_success(
+    plan: str,
+    checkout_session_id: str | None = None,
+    user=Depends(get_current_user),
+    db: Connection = Depends(get_db),
+):
+    """Stripe決済完了後のコールバック。checkout_session_idをStripeで検証してからプランを有効化する。"""
+    if not STRIPE_SECRET:
+        raise HTTPException(status_code=503, detail="Stripe未設定のため決済確認できません")
+
+    if not checkout_session_id:
+        raise HTTPException(status_code=400, detail="checkout_session_idが必要です")
+
+    if plan not in PLAN_PRICES:
+        raise HTTPException(status_code=400, detail="無効なプランです")
+
+    try:
+        import stripe
+        stripe.api_key = STRIPE_SECRET
+        session = stripe.checkout.Session.retrieve(checkout_session_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Stripe検証エラー: {e}")
+
+    if session.get("payment_status") != "paid":
+        raise HTTPException(status_code=402, detail="決済が完了していません")
+
+    meta = session.get("metadata", {})
+    if str(meta.get("user_id")) != str(user["id"]):
+        raise HTTPException(status_code=403, detail="ユーザーIDが一致しません")
+
+    if meta.get("plan") != plan:
+        raise HTTPException(status_code=400, detail="プランが一致しません")
+
+    payment_id = meta.get("payment_id")
+    await _activate_plan(user["id"], plan, payment_id, db)
     return {"status": "ok", "plan": plan}
 
 

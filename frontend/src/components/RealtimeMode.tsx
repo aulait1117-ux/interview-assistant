@@ -4,14 +4,13 @@ import FeedbackPanel from './FeedbackPanel'
 import { useAuth } from '../hooks/useAuth'
 import { sendHintToOverlay } from './OverlayButton'
 
-const SHORTCUT_KEY_STORAGE = 'interview_shortcut_key'
-const getShortcutKey = () => localStorage.getItem(SHORTCUT_KEY_STORAGE) ?? 'F1'
-
 
 interface Props {
   sessionId: string
   interviewType: InterviewType
   userBackground: string
+  jobTitle?: string
+  interviewTypePref?: string
   onBack: () => void
   onShowPricing?: () => void
 }
@@ -23,7 +22,7 @@ interface QARecord {
   timestamp: number
 }
 
-export default function RealtimeMode({ sessionId, interviewType, userBackground, onBack, onShowPricing }: Props) {
+export default function RealtimeMode({ sessionId, interviewType, userBackground, jobTitle, interviewTypePref, onBack, onShowPricing }: Props) {
   const { user, token } = useAuth()
   const [currentHints, setCurrentHints] = useState<HintResponse | null>(null)
   const [currentQuestion, setCurrentQuestion] = useState('')
@@ -53,13 +52,25 @@ export default function RealtimeMode({ sessionId, interviewType, userBackground,
   const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null)
   const resizeRef = useRef<{ startX: number; startY: number; origW: number; origH: number; origX: number; origY: number; dir: string } | null>(null)
 
+  // 修正2: 前のストリームをAbortControllerでキャンセルするためのref
+  const streamControllerRef = useRef<AbortController | null>(null)
+
+  // 修正1: overlayのdebounce用ref
+  const overlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const overlayPayloadRef = useRef<any>(null)
+
   // 戻るボタン
   const handleBack = useCallback(() => {
     onBack()
   }, [onBack])
 
-  // 機能3: ストリーミングで質問を処理
+  // 機能3: ストリーミングで質問を処理（修正2: AbortController追加）
   const handleQuestionDetected = useCallback(async (question: string) => {
+    // 前のストリームをキャンセル
+    streamControllerRef.current?.abort()
+    const controller = new AbortController()
+    streamControllerRef.current = controller
+
     setCurrentQuestion(question)
     setCurrentHints(null)
     setStreamingAnswer('')
@@ -79,7 +90,10 @@ export default function RealtimeMode({ sessionId, interviewType, userBackground,
           question,
           interview_type: interviewType,
           user_background: userBackground || null,
+          job_title: jobTitle || null,
+          interview_type_pref: interviewTypePref || null,
         }),
+        signal: controller.signal,
       })
 
       if (res.status === 403) {
@@ -100,7 +114,7 @@ export default function RealtimeMode({ sessionId, interviewType, userBackground,
 
       while (true) {
         const { done, value } = await reader.read()
-        if (done) break
+        if (done || controller.signal.aborted) break
         const chunk = decoder.decode(value, { stream: true })
         // SSE フォーマット: "data: {text}\n\n"
         const lines = chunk.split('\n')
@@ -114,16 +128,19 @@ export default function RealtimeMode({ sessionId, interviewType, userBackground,
         }
       }
 
-      // ストリーミング完了後に最終結果をセット
-      setCurrentHints({ answer: accumulated })
-      setIsStreaming(false)
+      // abortされた場合はstateを更新しない
+      if (!controller.signal.aborted) {
+        setCurrentHints({ answer: accumulated })
+        setIsStreaming(false)
+      }
     } catch (e: any) {
+      if (e.name === 'AbortError') return  // 意図的なキャンセル
       console.error(e)
       setIsStreaming(false)
     }
   }, [sessionId, interviewType, userBackground, token])
 
-  // --- オーバーレイ同期 (Electron IPC + ブラウザ BroadcastChannel) ---
+  // --- オーバーレイ同期 (Electron IPC + ブラウザ BroadcastChannel)（修正1: debounce追加） ---
   useEffect(() => {
     const payload = {
       question: currentQuestion,
@@ -131,20 +148,42 @@ export default function RealtimeMode({ sessionId, interviewType, userBackground,
       isStreaming,
       streamingText: streamingAnswer,
     }
+    overlayPayloadRef.current = payload
 
-    const api = (window as any).electronAPI
-    if (api?.sendHintsToOverlay) {
-      api.sendHintsToOverlay(payload)
+    const sendToOverlay = (p: typeof payload) => {
+      const api = (window as any).electronAPI
+      if (api?.sendHintsToOverlay) api.sendHintsToOverlay(p)
+      sendHintToOverlay(p)
+      fetch('/api/overlay/hint', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...p, isRecording: false }),
+      }).catch(() => {})
     }
 
-    sendHintToOverlay(payload)
+    // ストリーミング完了・停止時は即送信
+    if (!isStreaming) {
+      if (overlayTimerRef.current) {
+        clearTimeout(overlayTimerRef.current)
+        overlayTimerRef.current = null
+      }
+      sendToOverlay(payload)
+      return
+    }
 
-    fetch('/api/overlay/hint', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...payload, isRecording: false }),
-    }).catch(() => {})
+    // ストリーミング中は500msごとに1回だけ送る
+    if (overlayTimerRef.current) return
+    overlayTimerRef.current = setTimeout(() => {
+      overlayTimerRef.current = null
+      if (overlayPayloadRef.current) sendToOverlay(overlayPayloadRef.current)
+    }, 500)
 
+    return () => {
+      if (overlayTimerRef.current) {
+        clearTimeout(overlayTimerRef.current)
+        overlayTimerRef.current = null
+      }
+    }
   }, [currentQuestion, currentHints, isStreaming, streamingAnswer])
 
   // 残り時間が0になったら終了（管理者はスキップ）
@@ -170,8 +209,7 @@ export default function RealtimeMode({ sessionId, interviewType, userBackground,
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
-      const shortcut = getShortcutKey()
-      if (e.key === shortcut || e.key.toLowerCase() === 'r') {
+      if (e.key.toLowerCase() === 'r') {
         e.preventDefault()
         toggleRecording()
       } else if (e.key === 'Escape') {
@@ -298,7 +336,7 @@ export default function RealtimeMode({ sessionId, interviewType, userBackground,
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <button
             className="feedback-btn"
-            onClick={() => { stopListening(); setShowFeedback(true) }}
+            onClick={() => { fetch('/api/audio/stop', { method: 'POST' }).catch(() => {}); setIsRecording(false); setShowFeedback(true) }}
             disabled={qaHistory.length === 0}
           >
             セッション終了・総評

@@ -8,14 +8,14 @@
 ## 起動方法
 ```powershell
 # バックエンド（ポート8000）
-cd "c:\Users\aulai\Desktop\AI エージェント\interview_assistant\backend"
+cd "C:\企業道\02_開発部\interview_assistant\backend"
 py -m uvicorn main:app --port 8000 --reload
 
 # フロントエンド（ポート5173）
-Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "npm run dev" -WorkingDirectory "c:\Users\aulai\Desktop\AI エージェント\interview_assistant\frontend" -NoNewWindow
+Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "npm run dev" -WorkingDirectory "C:\企業道\02_開発部\interview_assistant\frontend" -NoNewWindow
 
 # Electronオーバーレイ（Zoomの上に常駐）
-Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "npm run overlay:dev" -WorkingDirectory "c:\Users\aulai\Desktop\AI エージェント\interview_assistant" -NoNewWindow
+Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "npm run overlay:dev" -WorkingDirectory "C:\企業道\02_開発部\interview_assistant" -NoNewWindow
 ```
 
 ブラウザ: `http://localhost:5173`

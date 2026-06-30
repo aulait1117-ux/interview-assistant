@@ -7,6 +7,7 @@ const url = require('url');
 // 開発環境か本番環境かを判定（最初に宣言して全関数から参照できるようにする）
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 
+
 // --- オーバーレイウィンドウ ---
 let overlayWindow = null;
 
@@ -508,7 +509,6 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
-  // 終了前にトレイを破棄
   if (tray) {
     tray.destroy();
     tray = null;

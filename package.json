@@ -8,12 +8,13 @@
     "electron:dev": "concurrently --kill-others \"npm run dev --prefix frontend\" \"cross-env NODE_ENV=development node scripts/launch-electron.js\"",
     "overlay:dev": "cross-env NODE_ENV=development OVERLAY_ONLY=true node scripts/launch-electron.js",
     "electron:build": "npm run build --prefix frontend && electron-builder",
-    "electron:build:win": "npm run build --prefix frontend && electron-builder --win",
+    "electron:build:win": "npm run build --prefix frontend && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win",
     "electron:build:mac": "npm run build --prefix frontend && electron-builder --mac"
   },
   "build": {
     "appId": "com.kigyodo.interview-assistant",
     "productName": "面接アシスタント",
+    "npmRebuild": false,
     "directories": {
       "output": "dist-electron"
     },
