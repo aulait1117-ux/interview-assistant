@@ -71,7 +71,7 @@ export default function PricingPage({ onBack }: Props) {
   const { user, refreshUser } = useAuth()
   const [plans, setPlans] = useState<Plan[]>([])
   const [isLoading, setIsLoading] = useState(false)
-  const [selectedProvider, setSelectedProvider] = useState<'stripe' | 'paypay'>('stripe')
+  const [selectedProvider, setSelectedProvider] = useState<string>('stripe_card')
 
   useEffect(() => {
     axios.get<Plan[]>('/api/billing/plans').then(r => setPlans(r.data))
@@ -86,7 +86,8 @@ export default function PricingPage({ onBack }: Props) {
       })
       window.location.href = res.data.checkout_url
     } catch (err: any) {
-      alert(err.response?.data?.detail || '決済エラーが発生しました')
+      const msg = err.response?.data?.detail || '決済エラーが発生しました'
+      alert(msg)
     } finally {
       setIsLoading(false)
     }
@@ -271,19 +272,53 @@ export default function PricingPage({ onBack }: Props) {
         <div className="payment-methods">
           <p className="payment-label">決済方法を選択</p>
           <div className="payment-options">
+            {/* Stripe（即時利用可） */}
             <button
-              className={`payment-opt ${selectedProvider === 'stripe' ? 'active' : ''}`}
-              onClick={() => setSelectedProvider('stripe')}
+              className={`payment-opt ${selectedProvider === 'stripe_card' ? 'active' : ''}`}
+              onClick={() => setSelectedProvider('stripe_card')}
             >
-              💳 クレジットカード（Stripe）
+              💳 カード / Apple Pay / Google Pay
             </button>
+            <button
+              className={`payment-opt ${selectedProvider === 'stripe_konbini' ? 'active' : ''}`}
+              onClick={() => setSelectedProvider('stripe_konbini')}
+            >
+              🏪 コンビニ払い
+              <span className="payment-opt-note">ローソン・ファミマ・ミニストップ 他</span>
+            </button>
+            {/* PayPay */}
             <button
               className={`payment-opt ${selectedProvider === 'paypay' ? 'active' : ''}`}
               onClick={() => setSelectedProvider('paypay')}
             >
               🟡 PayPay
             </button>
+            {/* LINE Pay（準備中） */}
+            <button className="payment-opt coming-soon" disabled>
+              💚 LINE Pay
+              <span className="payment-opt-badge">準備中</span>
+            </button>
+            {/* Amazon Pay（準備中） */}
+            <button className="payment-opt coming-soon" disabled>
+              📦 Amazon Pay
+              <span className="payment-opt-badge">準備中</span>
+            </button>
+            {/* d払い（準備中） */}
+            <button className="payment-opt coming-soon" disabled>
+              📱 d払い
+              <span className="payment-opt-badge">準備中</span>
+            </button>
+            {/* au PAY（準備中） */}
+            <button className="payment-opt coming-soon" disabled>
+              🔵 au PAY
+              <span className="payment-opt-badge">準備中</span>
+            </button>
           </div>
+          {selectedProvider === 'stripe_konbini' && (
+            <p className="payment-konbini-note">
+              ⚠️ コンビニ払いは発行から3日以内にお支払いください。支払い確認後にプランが有効になります。
+            </p>
+          )}
         </div>
 
         <div className="pricing-notes">

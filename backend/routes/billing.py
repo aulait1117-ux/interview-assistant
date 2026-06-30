@@ -19,6 +19,12 @@ STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 PAYPAY_API_KEY = os.getenv("PAYPAY_API_KEY", "")
 PAYPAY_API_SECRET = os.getenv("PAYPAY_API_SECRET", "")
 PAYPAY_MERCHANT_ID = os.getenv("PAYPAY_MERCHANT_ID", "")
+LINEPAY_CHANNEL_ID = os.getenv("LINEPAY_CHANNEL_ID", "")
+LINEPAY_CHANNEL_SECRET = os.getenv("LINEPAY_CHANNEL_SECRET", "")
+AMAZON_PAY_PUBLIC_KEY_ID = os.getenv("AMAZON_PAY_PUBLIC_KEY_ID", "")
+AMAZON_PAY_PRIVATE_KEY = os.getenv("AMAZON_PAY_PRIVATE_KEY", "")
+DPAYMENT_API_KEY = os.getenv("DPAYMENT_API_KEY", "")
+AUPAY_API_KEY = os.getenv("AUPAY_API_KEY", "")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 PLAN_PRICES = {
@@ -28,10 +34,26 @@ PLAN_PRICES = {
     "monthly_discount": {"amount": 1000, "label": "月額プラン（割引）"},
 }
 
+# 利用可能な決済プロバイダー一覧（フロントエンド表示用）
+PROVIDERS = [
+    {"id": "stripe_card",    "label": "クレジット/デビットカード", "icon": "💳", "available": True},
+    {"id": "stripe_konbini", "label": "コンビニ払い",              "icon": "🏪", "available": True},
+    {"id": "paypay",         "label": "PayPay",                    "icon": "🟡", "available": bool(PAYPAY_API_KEY)},
+    {"id": "linepay",        "label": "LINE Pay",                  "icon": "💚", "available": bool(LINEPAY_CHANNEL_ID)},
+    {"id": "amazonpay",      "label": "Amazon Pay",                "icon": "📦", "available": bool(AMAZON_PAY_PUBLIC_KEY_ID)},
+    {"id": "d_payment",      "label": "d払い",                     "icon": "📱", "available": bool(DPAYMENT_API_KEY)},
+    {"id": "aupay",          "label": "au PAY",                    "icon": "🔵", "available": bool(AUPAY_API_KEY)},
+]
+
 
 class CheckoutRequest(BaseModel):
     plan: str
-    provider: str  # "stripe" | "paypay"
+    provider: str  # "stripe_card" | "stripe_konbini" | "paypay" | "linepay" | "amazonpay" | "d_payment" | "aupay"
+
+
+@router.get("/providers")
+async def get_providers():
+    return PROVIDERS
 
 
 @router.get("/plans")
@@ -65,22 +87,46 @@ async def checkout(req: CheckoutRequest, user=Depends(get_current_user), db: Con
     plan_info = PLAN_PRICES[req.plan]
     payment_id = str(uuid.uuid4())
 
-    if req.provider == "stripe":
-        return await _stripe_checkout(payment_id, req.plan, plan_info, user, db)
+    if req.provider == "stripe_card":
+        return await _stripe_checkout(payment_id, req.plan, plan_info, "card", user, db)
+    elif req.provider == "stripe_konbini":
+        return await _stripe_checkout(payment_id, req.plan, plan_info, "konbini", user, db)
     elif req.provider == "paypay":
         return await _paypay_checkout(payment_id, req.plan, plan_info, user, db)
+    elif req.provider == "linepay":
+        return await _linepay_checkout(payment_id, req.plan, plan_info, user, db)
+    elif req.provider == "amazonpay":
+        raise HTTPException(status_code=503, detail="Amazon Payは準備中です。しばらくお待ちください。")
+    elif req.provider == "d_payment":
+        raise HTTPException(status_code=503, detail="d払いは準備中です。しばらくお待ちください。")
+    elif req.provider == "aupay":
+        raise HTTPException(status_code=503, detail="au PAYは準備中です。しばらくお待ちください。")
     else:
         raise HTTPException(status_code=400, detail="無効な決済プロバイダーです")
 
 
-async def _stripe_checkout(payment_id: str, plan: str, plan_info: dict, user: dict, db: Connection):
+async def _stripe_checkout(payment_id: str, plan: str, plan_info: dict, method: str, user: dict, db: Connection):
     if not STRIPE_SECRET:
         raise HTTPException(status_code=503, detail="Stripe未設定。.envにSTRIPE_SECRET_KEYを追加してください")
     try:
         import stripe
         stripe.api_key = STRIPE_SECRET
+
+        if method == "konbini":
+            session_params = {
+                "payment_method_types": ["konbini"],
+                "payment_method_options": {
+                    "konbini": {"expires_after_days": 3}
+                },
+            }
+        else:
+            # カード + Apple Pay / Google Pay（Stripe Checkoutが自動でウォレット表示）
+            session_params = {
+                "payment_method_types": ["card"],
+            }
+
         session = stripe.checkout.Session.create(
-            payment_method_types=["card"],
+            **session_params,
             line_items=[{
                 "price_data": {
                     "currency": "jpy",
@@ -90,16 +136,16 @@ async def _stripe_checkout(payment_id: str, plan: str, plan_info: dict, user: di
                 "quantity": 1,
             }],
             mode="payment",
-            success_url=f"{FRONTEND_URL}/?plan={plan}&session_id={{CHECKOUT_SESSION_ID}}",
+            success_url=f"{FRONTEND_URL}/?plan={plan}&session_id={{CHECKOUT_SESSION_ID}}&method={method}",
             cancel_url=f"{FRONTEND_URL}/",
-            metadata={"user_id": user["id"], "plan": plan, "payment_id": payment_id},
+            metadata={"user_id": user["id"], "plan": plan, "payment_id": payment_id, "method": method},
         )
         await db.execute(
             "INSERT INTO payments (id, user_id, plan, amount, provider, provider_payment_id, status) VALUES (?,?,?,?,?,?,?)",
-            (payment_id, user["id"], plan, plan_info["amount"], "stripe", session.id, "pending")
+            (payment_id, user["id"], plan, plan_info["amount"], f"stripe_{method}", session.id, "pending")
         )
         await db.commit()
-        return {"checkout_url": session.url, "provider": "stripe"}
+        return {"checkout_url": session.url, "provider": "stripe", "method": method}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -135,6 +181,75 @@ async def _paypay_checkout(payment_id: str, plan: str, plan_info: dict, user: di
         raise HTTPException(status_code=500, detail=str(e))
 
 
+async def _linepay_checkout(payment_id: str, plan: str, plan_info: dict, user: dict, db: Connection):
+    if not LINEPAY_CHANNEL_ID:
+        raise HTTPException(status_code=503, detail="LINE Payは準備中です。しばらくお待ちください。")
+    try:
+        import hmac
+        import hashlib
+        import base64
+        import json
+        import httpx
+        import time
+
+        nonce = str(uuid.uuid4())
+        timestamp = str(int(time.time() * 1000))
+        body = json.dumps({
+            "amount": plan_info["amount"],
+            "currency": "JPY",
+            "orderId": payment_id,
+            "packages": [{
+                "id": plan,
+                "amount": plan_info["amount"],
+                "name": plan_info["label"],
+                "products": [{
+                    "name": plan_info["label"],
+                    "quantity": 1,
+                    "price": plan_info["amount"],
+                }],
+            }],
+            "redirectUrls": {
+                "confirmUrl": f"{FRONTEND_URL}/?plan={plan}&payment_id={payment_id}&method=linepay",
+                "cancelUrl": f"{FRONTEND_URL}/",
+            },
+        })
+
+        text = LINEPAY_CHANNEL_SECRET + "/v3/payments/request" + body + nonce + timestamp
+        signature = base64.b64encode(
+            hmac.new(LINEPAY_CHANNEL_SECRET.encode(), text.encode(), hashlib.sha256).digest()
+        ).decode()
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-LINE-ChannelId": LINEPAY_CHANNEL_ID,
+            "X-LINE-Authorization-Nonce": nonce,
+            "X-LINE-Authorization": signature,
+            "X-LINE-MsgId": timestamp,
+        }
+
+        async with httpx.AsyncClient() as client:
+            res = await client.post(
+                "https://api-pay.line.me/v3/payments/request",
+                headers=headers,
+                content=body,
+            )
+        data = res.json()
+        if data.get("returnCode") != "0000":
+            raise Exception(data.get("returnMessage", "LINE Pay error"))
+
+        url = data["info"]["paymentUrl"]["web"]
+        await db.execute(
+            "INSERT INTO payments (id, user_id, plan, amount, provider, provider_payment_id, status) VALUES (?,?,?,?,?,?,?)",
+            (payment_id, user["id"], plan, plan_info["amount"], "linepay", payment_id, "pending")
+        )
+        await db.commit()
+        return {"checkout_url": url, "provider": "linepay"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/stripe/webhook")
 async def stripe_webhook(request: Request, db: Connection = Depends(get_db)):
     if not STRIPE_SECRET:
@@ -150,8 +265,25 @@ async def stripe_webhook(request: Request, db: Connection = Depends(get_db)):
 
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
+        # カード決済は即時確定（payment_status=paid）、コンビニは非同期なのでここでは無視
+        if session.get("payment_status") == "paid":
+            meta = session.get("metadata", {})
+            await _activate_plan(meta.get("user_id"), meta.get("plan"), meta.get("payment_id"), db)
+
+    elif event["type"] == "checkout.session.async_payment_succeeded":
+        # コンビニ払い完了（レジで支払われた）
+        session = event["data"]["object"]
         meta = session.get("metadata", {})
         await _activate_plan(meta.get("user_id"), meta.get("plan"), meta.get("payment_id"), db)
+
+    elif event["type"] == "checkout.session.async_payment_failed":
+        # コンビニ払い期限切れ・失敗
+        session = event["data"]["object"]
+        meta = session.get("metadata", {})
+        if meta.get("payment_id"):
+            await db.execute("UPDATE payments SET status='failed' WHERE id=?", (meta["payment_id"],))
+            await db.commit()
+
     return {"status": "ok"}
 
 
@@ -180,7 +312,8 @@ async def payment_success(
         raise HTTPException(status_code=400, detail=f"Stripe検証エラー: {e}")
 
     if session.get("payment_status") != "paid":
-        raise HTTPException(status_code=402, detail="決済が完了していません")
+        # コンビニ払い等の非同期決済 - webhookで有効化される
+        raise HTTPException(status_code=402, detail="payment_pending")
 
     meta = session.get("metadata", {})
     if str(meta.get("user_id")) != str(user["id"]):

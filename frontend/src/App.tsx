@@ -27,12 +27,14 @@ export default function App() {
   const [session, setSession] = useState<SessionState | null>(null)
   const [showAuthModal, setShowAuthModal] = useState(false)
   const [showPricing, setShowPricing] = useState(false)
-  const [paymentSuccess, setPaymentSuccess] = useState<{ plan: string; sessionId: string } | null>(() => {
+  const [paymentSuccess, setPaymentSuccess] = useState<{ plan: string; sessionId: string; method: string } | null>(() => {
     const params = new URLSearchParams(window.location.search)
     const plan = params.get('plan')
     const sessionId = params.get('session_id')
-    return plan && sessionId ? { plan, sessionId } : null
+    const method = params.get('method') ?? 'card'
+    return plan && sessionId ? { plan, sessionId, method } : null
   })
+  const [paymentPending, setPaymentPending] = useState(false)
   // Electron環境では起動時にウィジェット（コンパクト）モードで開始する
   const [isCompact, setIsCompact] = useState<boolean>(
     () => !!(typeof window !== 'undefined' && window.electronAPI?.isElectron)
@@ -98,7 +100,12 @@ export default function App() {
       params: { plan: paymentSuccess.plan, checkout_session_id: paymentSuccess.sessionId },
     })
       .then(() => auth.refreshUser())
-      .catch(() => {})
+      .catch((err) => {
+        // コンビニ払い等の非同期決済はwebhook経由で有効化される（payment_pendingは正常）
+        if (err.response?.status === 402 && err.response?.data?.detail === 'payment_pending') {
+          setPaymentPending(true)
+        }
+      })
     window.history.replaceState({}, '', window.location.pathname)
   }, [paymentSuccess, auth.user])
 
@@ -117,14 +124,31 @@ export default function App() {
       monthly: '月額使い放題プラン',
       monthly_discount: '月額プラン（割引）',
     }
+    const isKonbini = paymentSuccess.method === 'konbini'
     return (
       <AuthContext.Provider value={auth}>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', gap: 16, color: '#e2e8f0', textAlign: 'center', padding: 24 }}>
-          <div style={{ fontSize: 64 }}>🎉</div>
-          <h1 style={{ fontSize: 24, fontWeight: 700, margin: 0 }}>決済完了！</h1>
-          <p style={{ color: '#94a3b8', margin: 0 }}>{PLAN_NAMES[paymentSuccess.plan] ?? paymentSuccess.plan} が有効になりました</p>
+          {isKonbini || paymentPending ? (
+            <>
+              <div style={{ fontSize: 64 }}>🏪</div>
+              <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>コンビニ支払い番号を発行しました</h1>
+              <p style={{ color: '#94a3b8', margin: 0, maxWidth: 320, lineHeight: 1.6 }}>
+                3日以内にコンビニのレジで支払いを完了してください。<br />
+                支払い確認後、自動的に <strong style={{ color: '#e2e8f0' }}>{PLAN_NAMES[paymentSuccess.plan] ?? paymentSuccess.plan}</strong> が有効になります。
+              </p>
+              <p style={{ color: '#64748b', fontSize: 13, margin: 0 }}>
+                対応コンビニ：ローソン・ファミリーマート・ミニストップ・セイコーマート・デイリーヤマザキ
+              </p>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 64 }}>🎉</div>
+              <h1 style={{ fontSize: 24, fontWeight: 700, margin: 0 }}>決済完了！</h1>
+              <p style={{ color: '#94a3b8', margin: 0 }}>{PLAN_NAMES[paymentSuccess.plan] ?? paymentSuccess.plan} が有効になりました</p>
+            </>
+          )}
           <button
-            onClick={() => setPaymentSuccess(null)}
+            onClick={() => { setPaymentSuccess(null); setPaymentPending(false) }}
             style={{ marginTop: 8, padding: '10px 28px', background: 'var(--primary, #6366f1)', color: '#fff', border: 'none', borderRadius: 8, fontSize: 15, cursor: 'pointer' }}
           >
             アプリに戻る

@@ -8,17 +8,55 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.11"
-      - key: ANTHROPIC_API_KEY
-        sync: false
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: SECRET_KEY
-        generateValue: true
       - key: ENVIRONMENT
         value: production
       - key: FRONTEND_URL
         value: https://interview-assistant-frontend.onrender.com
+
+      # AI API キー（Renderダッシュボードで手動設定）
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+
+      # 認証
+      - key: SECRET_KEY
+        generateValue: true
       - key: GOOGLE_CLIENT_ID
+        sync: false
+
+      # Stripe（カード・コンビニ払い）
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+
+      # PayPay
+      - key: PAYPAY_API_KEY
+        sync: false
+      - key: PAYPAY_API_SECRET
+        sync: false
+      - key: PAYPAY_MERCHANT_ID
+        sync: false
+
+      # LINE Pay（契約後に設定）
+      - key: LINEPAY_CHANNEL_ID
+        sync: false
+      - key: LINEPAY_CHANNEL_SECRET
+        sync: false
+
+      # Amazon Pay（契約後に設定）
+      - key: AMAZON_PAY_PUBLIC_KEY_ID
+        sync: false
+      - key: AMAZON_PAY_PRIVATE_KEY
+        sync: false
+
+      # d払い（契約後に設定）
+      - key: DPAYMENT_API_KEY
+        sync: false
+
+      # au PAY（契約後に設定）
+      - key: AUPAY_API_KEY
         sync: false
 
   - type: web

@@ -21,6 +21,7 @@ app.add_middleware(
         "http://localhost:3000",
         "https://interview-assistant-hrar.onrender.com",
         "https://interview-assistant-frontend.onrender.com",
+        "null",  # Electron renderer (file:// origin)
     ],
     allow_credentials=True,
     allow_methods=["*"],
