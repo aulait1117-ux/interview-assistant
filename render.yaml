@@ -10,10 +10,16 @@ services:
         value: "3.11.11"
       - key: ANTHROPIC_API_KEY
         sync: false
+      - key: OPENAI_API_KEY
+        sync: false
       - key: SECRET_KEY
         generateValue: true
       - key: ENVIRONMENT
         value: production
+      - key: FRONTEND_URL
+        value: https://interview-assistant-frontend.onrender.com
+      - key: GOOGLE_CLIENT_ID
+        sync: false
 
   - type: web
     name: interview-assistant-frontend
@@ -24,6 +30,8 @@ services:
     envVars:
       - key: VITE_API_URL
         value: https://interview-assistant-hrar.onrender.com
+      - key: VITE_GOOGLE_CLIENT_ID
+        sync: false
     routes:
       - type: rewrite
         source: /*
