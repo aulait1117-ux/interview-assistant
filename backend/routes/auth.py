@@ -12,7 +12,9 @@ from services.auth_service import (
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 
 # 無料プラン悪用対策：同一IPからの新規登録数を24時間あたりこの件数までに制限する
-REGISTER_IP_LIMIT_PER_DAY = 3
+# 大学Wi-Fi・キャリアCGNAT等で多数の正規ユーザーが同一IPを共有するケースを潰さないよう、
+# 「1人が使い捨てメールで無限に量産する」ケースだけを止められる水準に余裕を持たせている
+REGISTER_IP_LIMIT_PER_DAY = 20
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
