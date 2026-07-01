@@ -11,7 +11,7 @@ services:
       - key: ENVIRONMENT
         value: production
       - key: FRONTEND_URL
-        value: https://interview-assistant-frontend.onrender.com
+        value: https://interview-assistant-frontend-gcgj.onrender.com
 
       # AI API キー（Renderダッシュボードで手動設定）
       - key: ANTHROPIC_API_KEY

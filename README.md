@@ -95,7 +95,7 @@ npm run overlay:dev
 | サービス | URL |
 |---|---|
 | バックエンド | https://interview-assistant-hrar.onrender.com |
-| フロントエンド | https://interview-assistant-frontend.onrender.com |
+| フロントエンド | https://interview-assistant-frontend-gcgj.onrender.com |
 
 Stripe webhook登録先: `https://interview-assistant-hrar.onrender.com/api/billing/stripe/webhook`
 

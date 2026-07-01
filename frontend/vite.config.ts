@@ -12,10 +12,13 @@ export default defineConfig({
   base: isElectronBuild ? './' : '/',
   server: {
     port: 5173,
-    allowedHosts: ['interview-assistant-frontend.onrender.com', 'localhost'],
+    allowedHosts: ['interview-assistant-frontend.onrender.com', 'interview-assistant-frontend-gcgj.onrender.com', 'localhost'],
     proxy: {
       '/api': apiUrl,
     },
+  },
+  preview: {
+    allowedHosts: ['interview-assistant-frontend.onrender.com', 'interview-assistant-frontend-gcgj.onrender.com', 'localhost'],
   },
   build: {
     outDir: 'dist',
