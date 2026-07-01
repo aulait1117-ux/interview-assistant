@@ -47,12 +47,15 @@ export function useAuthProvider(): AuthContextType {
 
   const refreshUser = async () => {
     try {
-      const res = await axios.get<User>('/api/auth/me')
+      const res = await axios.get<User>('/api/auth/me', { timeout: 8000 })
       setUser(res.data)
-    } catch {
+    } catch (err) {
       setUser(null)
-      setToken(null)
-      localStorage.removeItem('token')
+      // タイムアウト（Renderスリープ中）はトークンを保持する
+      if (!axios.isAxiosError(err) || err.code !== 'ECONNABORTED') {
+        setToken(null)
+        localStorage.removeItem('token')
+      }
     }
   }
 

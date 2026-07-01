@@ -134,7 +134,12 @@ function buildTrayMenu() {
     { type: 'separator' },
     {
       label: 'ウィンドウを表示',
-      click: () => { if (mainWindow) mainWindow.show(); },
+      click: () => {
+        if (!mainWindow) return;
+        mainWindow.show();
+        mainWindow.focus();
+        mainWindow.moveTop();
+      },
     },
     {
       label: '終了',

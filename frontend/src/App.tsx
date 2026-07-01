@@ -110,6 +110,10 @@ export default function App() {
   }, [paymentSuccess, auth.user])
 
   if (auth.isLoading) {
+    // Electron widget mode: ローディング中もウィジェットを表示（Renderスリープ中でも固まらない）
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.isElectron) {
+      return <WidgetMode onExpand={() => {}} />
+    }
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#94a3b8' }}>
         読み込み中...
