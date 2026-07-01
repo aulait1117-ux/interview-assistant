@@ -24,6 +24,9 @@
       "!**/node_modules/**",
       "!frontend/node_modules/**"
     ],
+    "asarUnpack": [
+      "frontend/dist/**/*"
+    ],
     "extraMetadata": {
       "main": "electron/main.js"
     },

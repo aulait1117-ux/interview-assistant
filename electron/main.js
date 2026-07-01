@@ -47,7 +47,7 @@ function createOverlayWindow() {
   if (isDev) {
     overlayWindow.loadURL('http://localhost:5173/overlay.html');
   } else {
-    const overlayPath = path.join(__dirname, '..', 'frontend', 'dist', 'overlay.html');
+    const overlayPath = path.join(process.resourcesPath, 'app.asar.unpacked', 'frontend', 'dist', 'overlay.html');
     overlayWindow.loadURL(
       url.format({ pathname: overlayPath, protocol: 'file:', slashes: true })
     );
@@ -237,8 +237,8 @@ function createWindow() {
     mainWindow.loadURL('http://localhost:5173');
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
-    // 本番時: ビルドされた静的ファイルをロード
-    const indexPath = path.join(__dirname, '..', 'frontend', 'dist', 'index.html');
+    // 本番時: asarUnpack済みの静的ファイルをロード
+    const indexPath = path.join(process.resourcesPath, 'app.asar.unpacked', 'frontend', 'dist', 'index.html');
     mainWindow.loadURL(
       url.format({
         pathname: indexPath,
