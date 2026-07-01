@@ -59,14 +59,9 @@ Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "npm run overlay:dev" -Wor
 - **Stripe決済コード**: 実装済み（APIキー・webhook設定は未完了）
 
 ## 現在の問題（未解決）
-- **音声録音→文字起こしが動かない**
-  - `useSpeechRecognition.ts` でMediaRecorder APIを使用
-  - 録音ボタンは機能する（isListening切り替わる）
-  - しかし `stopListening` 内の `setTranscript` が反映されない
-  - `onstop`ハンドラが発火していない疑い
-  - デバッグコードあり（blob.size表示など）
-  - 原因不明のまま保留
-  - **次回セッションで継続調査が必要**
+- **Stripe本番設定未完了**（荒川さん側の作業）
+  - `STRIPE_SECRET_KEY` を `backend/.env` とRender環境変数に設定
+  - Stripeダッシュボードでwebhook登録: `https://interview-assistant-hrar.onrender.com/api/billing/stripe/webhook`
 
 ## Chrome↔Electron 通信アーキテクチャ
 ```
