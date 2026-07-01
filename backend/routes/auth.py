@@ -30,9 +30,25 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+async def _carried_over_free_minutes(db: Connection, device_id: str | None) -> int:
+    """同一端末（device_id）が過去に使った無料枠の合計を返す。
+    新しいアカウントで登録し直しても、この端末が無料枠を使い切っていれば
+    最初から0分しか残っていない状態にし、使い回しを防ぐ"""
+    if not device_id:
+        return 0
+    cursor = await db.execute(
+        "SELECT COALESCE(SUM(trial_minutes_used), 0) FROM users WHERE device_id = ? AND plan = 'free'",
+        (device_id,)
+    )
+    row = await cursor.fetchone()
+    used = row[0] if row else 0
+    return min(used, PLANS["free"]["minutes"])
+
+
 class RegisterRequest(BaseModel):
     email: str
     password: str
+    device_id: str | None = None
 
 
 class LoginRequest(BaseModel):
@@ -103,10 +119,13 @@ async def register(req: RegisterRequest, request: Request, db: Connection = Depe
             detail="このネットワークからの新規登録が上限に達しました。しばらく時間をおいてから再度お試しください"
         )
 
+    # 無料プラン悪用対策：同一端末が過去に使った無料枠を新アカウントにも引き継ぐ（使い回し防止）
+    carried_over_minutes = await _carried_over_free_minutes(db, req.device_id)
+
     user_id = new_user_id()
     await db.execute(
-        "INSERT INTO users (id, email, password_hash, registration_ip) VALUES (?, ?, ?, ?)",
-        (user_id, req.email.lower(), hash_password(req.password), ip)
+        "INSERT INTO users (id, email, password_hash, registration_ip, device_id, trial_minutes_used) VALUES (?, ?, ?, ?, ?, ?)",
+        (user_id, req.email.lower(), hash_password(req.password), ip, req.device_id, carried_over_minutes)
     )
     await db.commit()
     token = create_token(user_id, is_admin=False)
@@ -166,6 +185,7 @@ async def get_overlay_token():
 
 class GoogleAuthRequest(BaseModel):
     id_token: str
+    device_id: str | None = None
 
 
 @router.post("/google")
@@ -206,10 +226,12 @@ async def google_login(body: GoogleAuthRequest, db: Connection = Depends(get_db)
         return {"token": token, "email": email, "plan": row[2], "is_admin": bool(row[2])}
 
     # 新規ユーザー作成（Googleログインはパスワードなし → 空文字でNOT NULL制約を満たす）
+    # 無料プラン悪用対策：同一端末が過去に使った無料枠を新アカウントにも引き継ぐ
+    carried_over_minutes = await _carried_over_free_minutes(db, body.device_id)
     user_id = new_user_id()
     await db.execute(
-        "INSERT INTO users (id, email, password_hash, google_id) VALUES (?, ?, '', ?)",
-        (user_id, email, google_id)
+        "INSERT INTO users (id, email, password_hash, google_id, device_id, trial_minutes_used) VALUES (?, ?, '', ?, ?, ?)",
+        (user_id, email, google_id, body.device_id, carried_over_minutes)
     )
     await db.commit()
     token = create_token(user_id, is_admin=False)

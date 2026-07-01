@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { GoogleLogin } from '@react-oauth/google'
 import { useAuth } from '../hooks/useAuth'
+import { getDeviceId } from '../utils/deviceId'
 import axios from 'axios'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
@@ -41,6 +42,7 @@ export default function AuthModal({ onClose }: Props) {
     try {
       const res = await axios.post(`${API_BASE}/api/auth/google`, {
         id_token: credentialResponse.credential,
+        device_id: getDeviceId(),
       })
       loginWithToken(res.data.token, res.data)
       onClose()

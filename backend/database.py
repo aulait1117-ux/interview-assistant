@@ -42,6 +42,11 @@ async def init_db():
             await db.execute("ALTER TABLE users ADD COLUMN registration_ip TEXT")
         except Exception:
             pass  # カラムが既に存在する場合は無視
+        # マイグレーション: 無料プラン悪用対策用 device_id カラムを追加（同一端末での無料枠使い回し防止）
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN device_id TEXT")
+        except Exception:
+            pass  # カラムが既に存在する場合は無視
         await db.execute("""
             CREATE TABLE IF NOT EXISTS payments (
                 id TEXT PRIMARY KEY,

@@ -1,5 +1,6 @@
 import { useState, useEffect, createContext, useContext } from 'react'
 import axios from 'axios'
+import { getDeviceId } from '../utils/deviceId'
 
 interface User {
   id: string
@@ -84,7 +85,7 @@ export function useAuthProvider(): AuthContextType {
   }
 
   const register = async (email: string, password: string) => {
-    const res = await axios.post<{ token: string }>('/api/auth/register', { email, password })
+    const res = await axios.post<{ token: string }>('/api/auth/register', { email, password, device_id: getDeviceId() })
     const t = res.data.token
     localStorage.setItem('token', t)
     setToken(t)
