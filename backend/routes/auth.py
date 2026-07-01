@@ -1,6 +1,6 @@
 import os
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, Request
 from aiosqlite import Connection
 from pydantic import BaseModel, EmailStr
 from database import get_db
@@ -11,10 +11,21 @@ from services.auth_service import (
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 
+# 無料プラン悪用対策：同一IPからの新規登録数を24時間あたりこの件数までに制限する
+REGISTER_IP_LIMIT_PER_DAY = 3
+
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 # オーバーレイ用トークン共有（ChromeとElectronのlocalStorageが別のため）
 _overlay_token: str | None = None
+
+
+def _client_ip(request: Request) -> str:
+    """Render等のプロキシ配下ではX-Forwarded-Forの先頭がクライアントの実IP"""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
 
 
 class RegisterRequest(BaseModel):
@@ -44,24 +55,56 @@ async def get_current_user(
     row = await cursor.fetchone()
     if not row:
         raise HTTPException(status_code=401, detail="ユーザーが見つかりません")
+
+    plan = row[2]
+    plan_expires_at = row[3]
+
+    # 有料プランの期限切れ自動ダウングレード
+    if plan != "free" and plan_expires_at:
+        from datetime import datetime, timezone
+        try:
+            expires = datetime.fromisoformat(plan_expires_at.replace("Z", "+00:00"))
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) > expires:
+                plan = "free"
+                await db.execute("UPDATE users SET plan = 'free' WHERE id = ?", (user_id,))
+                await db.commit()
+        except Exception:
+            pass
+
     return {
-        "id": row[0], "email": row[1], "plan": row[2],
-        "plan_expires_at": row[3], "trial_minutes_used": row[4],
+        "id": row[0], "email": row[1], "plan": plan,
+        "plan_expires_at": plan_expires_at, "trial_minutes_used": row[4],
         "used_day_plan": row[5], "is_admin": bool(row[6]),
     }
 
 
 @router.post("/register")
-async def register(req: RegisterRequest, db: Connection = Depends(get_db)):
+async def register(req: RegisterRequest, request: Request, db: Connection = Depends(get_db)):
     cursor = await db.execute("SELECT id FROM users WHERE email = ?", (req.email,))
     if await cursor.fetchone():
         raise HTTPException(status_code=400, detail="このメールアドレスは既に登録されています")
     if len(req.password) < 6:
         raise HTTPException(status_code=400, detail="パスワードは6文字以上にしてください")
+
+    # 無料プラン悪用対策：同一IPからの登録数を24時間あたり REGISTER_IP_LIMIT_PER_DAY 件までに制限
+    ip = _client_ip(request)
+    cursor = await db.execute(
+        "SELECT COUNT(*) FROM users WHERE registration_ip = ? AND created_at > datetime('now', '-1 day')",
+        (ip,)
+    )
+    row = await cursor.fetchone()
+    if row and row[0] >= REGISTER_IP_LIMIT_PER_DAY:
+        raise HTTPException(
+            status_code=429,
+            detail="このネットワークからの新規登録が上限に達しました。しばらく時間をおいてから再度お試しください"
+        )
+
     user_id = new_user_id()
     await db.execute(
-        "INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)",
-        (user_id, req.email.lower(), hash_password(req.password))
+        "INSERT INTO users (id, email, password_hash, registration_ip) VALUES (?, ?, ?, ?)",
+        (user_id, req.email.lower(), hash_password(req.password), ip)
     )
     await db.commit()
     token = create_token(user_id, is_admin=False)
@@ -160,10 +203,10 @@ async def google_login(body: GoogleAuthRequest, db: Connection = Depends(get_db)
         token = create_token(row[0], is_admin=bool(row[2]))
         return {"token": token, "email": email, "plan": row[2], "is_admin": bool(row[2])}
 
-    # 新規ユーザー作成（password_hash はNULL）
+    # 新規ユーザー作成（Googleログインはパスワードなし → 空文字でNOT NULL制約を満たす）
     user_id = new_user_id()
     await db.execute(
-        "INSERT INTO users (id, email, password_hash, google_id) VALUES (?, ?, NULL, ?)",
+        "INSERT INTO users (id, email, password_hash, google_id) VALUES (?, ?, '', ?)",
         (user_id, email, google_id)
     )
     await db.commit()

@@ -37,6 +37,11 @@ async def init_db():
             await db.execute("ALTER TABLE users ADD COLUMN google_id TEXT")
         except Exception:
             pass  # カラムが既に存在する場合は無視
+        # マイグレーション: 無料プラン悪用対策用 registration_ip カラムを追加
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN registration_ip TEXT")
+        except Exception:
+            pass  # カラムが既に存在する場合は無視
         await db.execute("""
             CREATE TABLE IF NOT EXISTS payments (
                 id TEXT PRIMARY KEY,
@@ -53,6 +58,7 @@ async def init_db():
         await db.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
+                user_id TEXT REFERENCES users(id),
                 interview_type TEXT NOT NULL,
                 user_background TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -60,6 +66,11 @@ async def init_db():
                 overall_feedback TEXT
             )
         """)
+        # マイグレーション: 既存テーブルに user_id カラムが無ければ追加
+        try:
+            await db.execute("ALTER TABLE sessions ADD COLUMN user_id TEXT REFERENCES users(id)")
+        except Exception:
+            pass
         await db.execute("""
             CREATE TABLE IF NOT EXISTS qa_pairs (
                 id TEXT PRIMARY KEY,
