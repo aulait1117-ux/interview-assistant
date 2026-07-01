@@ -31,17 +31,24 @@ async def fetch_page_text(url: str, max_chars: int = 3000) -> str:
 async def fetch_company_info_by_name(company_name: str) -> str:
     """
     Fetch company information by name using free APIs (no API key required).
-    Tries Wikipedia first, then DuckDuckGo Instant Answer API.
+    Tries Wikipedia first (with name variations), then DuckDuckGo Instant Answer API.
     Returns a text string with whatever info was found.
     """
+    # Try multiple name variations for better Wikipedia matching
+    name_variants = [company_name]
+    if not company_name.endswith(("株式会社", "工業", "電機", "化学", "商事", "物産", "銀行", "グループ")):
+        name_variants.append(company_name + "株式会社")
+    if "株式会社" not in company_name:
+        name_variants.append("株式会社" + company_name)
+
+    for name in name_variants:
+        encoded = urllib.parse.quote(name)
+        wiki_text = await _try_wikipedia(encoded)
+        if wiki_text:
+            return wiki_text
+
+    # Fallback: DuckDuckGo Instant Answer API (official free endpoint, not scraping)
     encoded = urllib.parse.quote(company_name)
-
-    # 1. Try Japanese Wikipedia first
-    wiki_text = await _try_wikipedia(encoded)
-    if wiki_text:
-        return wiki_text
-
-    # 2. Fallback: DuckDuckGo Instant Answer API (official free endpoint, not scraping)
     ddg_text = await _try_duckduckgo_instant(encoded)
     if ddg_text:
         return ddg_text
