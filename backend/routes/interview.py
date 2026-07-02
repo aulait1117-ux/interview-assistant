@@ -71,11 +71,15 @@ def _get_quick_hint(text: str) -> str | None:
 
 
 @router.post("/session", response_model=SessionCreateResponse)
-async def create_session(req: SessionCreateRequest, db: Connection = Depends(get_db)):
+async def create_session(
+    req: SessionCreateRequest,
+    db: Connection = Depends(get_db),
+    user=Depends(get_current_user),
+):
     session_id = str(uuid.uuid4())
     await db.execute(
-        "INSERT INTO sessions (id, interview_type) VALUES (?, ?)",
-        (session_id, req.interview_type),
+        "INSERT INTO sessions (id, user_id, interview_type, user_background) VALUES (?, ?, ?, ?)",
+        (session_id, user["id"], req.interview_type, req.user_background),
     )
     await db.commit()
     return SessionCreateResponse(session_id=session_id)
@@ -108,8 +112,8 @@ async def get_hint(
         interview_type_pref=req.interview_type_pref,
     )
     await db.execute(
-        "INSERT INTO qa_pairs (session_id, question, ai_hints) VALUES (?, ?, ?)",
-        (req.session_id, req.question, str(result.get("hints", []))),
+        "INSERT INTO qa_pairs (id, session_id, question, ai_hints) VALUES (?, ?, ?, ?)",
+        (str(uuid.uuid4()), req.session_id, req.question, str(result.get("hints", []))),
     )
     await db.commit()
     return HintResponse(**result)
@@ -134,6 +138,13 @@ async def get_hint_stream(
                 detail="利用可能な時間が終了しました。プランをアップグレードしてください。",
             )
 
+    # このセッション内で既に使われた登録回答カテゴリを取得（同一エピソードの使い回し対策）
+    cursor = await db.execute(
+        "SELECT DISTINCT category FROM qa_pairs WHERE session_id = ? AND category IS NOT NULL AND category != ''",
+        (req.session_id,),
+    )
+    used_categories = [row[0] for row in await cursor.fetchall()]
+
     async def event_generator():
         full_text = ""
         async for chunk in claude_service.generate_hints_stream(
@@ -142,14 +153,21 @@ async def get_hint_stream(
             user_background=req.user_background,
             job_title=req.job_title,
             interview_type_pref=req.interview_type_pref,
+            forced_mode=req.forced_mode,
+            used_categories=used_categories,
         ):
             full_text += chunk
             yield f"data: {chunk}\n\n"
 
+        # METAからモード・カテゴリを抽出して保存
+        meta_m = re.match(r'^##META:([^|#]*)\|([^|#]*)\|', full_text)
+        hint_used = meta_m.group(1) if meta_m else 'ai'
+        category = meta_m.group(2) if meta_m else ''
+
         # ストリーミング完了後に DB 保存
         await db.execute(
-            "INSERT INTO qa_pairs (session_id, question, ai_hints) VALUES (?, ?, ?)",
-            (req.session_id, req.question, full_text),
+            "INSERT INTO qa_pairs (id, session_id, question, ai_hints, hint_used, category) VALUES (?, ?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), req.session_id, req.question, full_text, hint_used, category),
         )
         await db.commit()
         yield "data: [DONE]\n\n"
@@ -185,12 +203,14 @@ async def overlay_hint_stream(req: HintRequest):
                 user_background=user_bg,
                 job_title=job_title,
                 interview_type_pref=interview_type_pref,
+                forced_mode=req.forced_mode,
             ):
                 yield f"data: {chunk}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as e:
+            # サーバー側ログには詳細を残すが、ユーザーには内部情報を含まない汎用メッセージのみ返す
             print(f"[overlay-hint-stream] エラー詳細: {type(e).__name__}: {e}")
-            yield f"data: (ヒント生成エラー: {e})\n\n"
+            yield "data: ⚠️ ヒントの生成に失敗しました。もう一度お試しください。\n\n"
             yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream",

@@ -38,7 +38,7 @@ const INTERVIEW_TYPE_OPTIONS = ['1次面接', '2次面接', '最終面接', 'グ
 
 const EMPTY_PROFILE: UserProfile = {
   name: '', university: '', faculty: '', grade: '大学3年',
-  strength: '', experience: '',
+  strength: '', experience: '', selfPR: '', weakness: '', careerVision: '', skills: '', partTimeWork: '',
   companyName: '', industry: '', jobType: '', motivation: '',
   jobTitle: '', interviewTypePref: '1次面接',
 }
@@ -133,6 +133,7 @@ export default function SetupForm({ onStart, onBack }: Props) {
   const [step, setStep] = useState<'user' | 'company'>('user')
   const [companyInfo, setCompanyInfo] = useState<CompanyInfo | null>(null)
   const [isResearching, setIsResearching] = useState(false)
+  const [researchError, setResearchError] = useState<string | null>(null)
   const [urls, setUrls] = useState<string[]>(loadUrlsFromStorage)
 
   // 履歴の状態
@@ -184,6 +185,7 @@ export default function SetupForm({ onStart, onBack }: Props) {
     if (!canResearch) return
     setIsResearching(true)
     setCompanyInfo(null)
+    setResearchError(null)
 
     // 調査実行時に会社名をhistoryへ保存
     const valuesToSave: string[] = []
@@ -206,9 +208,13 @@ export default function SetupForm({ onStart, onBack }: Props) {
         urls: validUrls,
       })
       setCompanyInfo(res.data)
+      // 企業研究の面接対策ポイントをプロフィールに保存（AIヒント生成に活用される）
+      if (res.data.interview_tips) {
+        setProfile(prev => ({ ...prev, companyResearchTips: res.data.interview_tips }))
+      }
     } catch (err: any) {
       const msg = err?.response?.data?.detail || '企業情報の取得に失敗しました。会社名またはURLを確認してください。'
-      alert(msg)
+      setResearchError(msg)
     } finally {
       setIsResearching(false)
     }
@@ -320,6 +326,56 @@ export default function SetupForm({ onStart, onBack }: Props) {
                 value={profile.experience}
                 onChange={e => set('experience', e.target.value)}
                 rows={4}
+              />
+            </div>
+
+            <div className="form-field full">
+              <label>自己PR</label>
+              <textarea
+                placeholder="例：私は課題解決に向けて粘り強く取り組む人間です。アルバイトで売上改善施策を提案し、3ヶ月で客単価を20%向上させました。"
+                value={profile.selfPR}
+                onChange={e => set('selfPR', e.target.value)}
+                rows={4}
+              />
+            </div>
+
+            <div className="form-field full">
+              <label>長所・短所</label>
+              <textarea
+                placeholder="例：長所：行動力があり、まず動いてみることで周囲を巻き込める。短所：完璧主義になりすぎて時間がかかることがある。"
+                value={profile.weakness}
+                onChange={e => set('weakness', e.target.value)}
+                rows={3}
+              />
+            </div>
+
+            <div className="form-field full">
+              <label>将来のビジョン・キャリアプラン</label>
+              <textarea
+                placeholder="例：5年後は専門性を高めて〇〇のスペシャリストになり、10年後はチームをリードできるポジションを目指したい。"
+                value={profile.careerVision}
+                onChange={e => set('careerVision', e.target.value)}
+                rows={3}
+              />
+            </div>
+
+            <div className="form-field full">
+              <label>資格・スキル・語学</label>
+              <textarea
+                placeholder="例：TOEIC 780点、日商簿記2級、Python（機械学習経験あり）、Excel（ピボット・VLOOKUP）"
+                value={profile.skills}
+                onChange={e => set('skills', e.target.value)}
+                rows={2}
+              />
+            </div>
+
+            <div className="form-field full">
+              <label>アルバイト・社会人経験</label>
+              <textarea
+                placeholder="例：飲食店でホールリーダーとして2年間従事。スタッフのシフト管理や新人教育を担当した。"
+                value={profile.partTimeWork}
+                onChange={e => set('partTimeWork', e.target.value)}
+                rows={3}
               />
             </div>
 
@@ -437,6 +493,12 @@ export default function SetupForm({ onStart, onBack }: Props) {
                 rows={3}
               />
             </div>
+
+            {researchError && (
+              <div style={{ color: '#f87171', background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)', borderRadius: 8, padding: '10px 14px', fontSize: 14, marginBottom: 12 }}>
+                ⚠️ {researchError}
+              </div>
+            )}
 
             {companyInfo && (
               <div className="company-info-panel">

@@ -52,6 +52,16 @@ export default function HomePage({ onStart, onPricing, onLogin }: Props) {
             <span className="home-feature-text">企業情報自動リサーチ</span>
           </div>
         </div>
+
+        {/* インストール版との違いへの導線 */}
+        <p style={{ marginTop: 28, fontSize: 13, color: '#94a3b8', lineHeight: 1.8 }}>
+          ブラウザ版はインストール不要ですぐ試せます。<br />
+          Zoom画面の上にヒントを浮かせたい場合は{' '}
+          <a href="/desktop-guide" style={{ color: '#818cf8', textDecoration: 'underline', whiteSpace: 'nowrap' }}>
+            インストール版でできること
+          </a>{' '}
+          をご覧ください。
+        </p>
       </div>
     </div>
   )

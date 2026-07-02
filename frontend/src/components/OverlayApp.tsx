@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 
-// 「▶ 推測:」から質問部分だけを抽出（コンポーネント外に置くことでクロージャ問題を回避）
-// ① 日本語の質問語尾パターンで止める（優先）、② フォールバック: 30字 + 読点で止める
+type AnswerMode = 'ai' | 'registered' | 'hybrid'
+
+// 「▶ 推測:」から質問部分だけを抽出
 function extractPredQ(text: string): string | undefined {
-  const after = text.match(/▶[　 ]*推測[:：][　 ]*「?(.{2,})/)?.[1]
+  const after = text.replace(/^##META:[^#]*##\n?/, '').match(/▶[　 ]*推測[:：][　 ]*「?(.{2,})/)?.[1]
   if (!after) return undefined
   const byPattern = after.match(
     /^(.{2,35}(?:てください|ますか|でしょうか|ありますか|ですか|ください|ませんか|ましたか|いますか|でしたか|みてください|はどうですか|ありませんか|でしょう))/
@@ -13,20 +14,37 @@ function extractPredQ(text: string): string | undefined {
   return fallback.length >= 4 ? fallback : undefined
 }
 
-// SSEは改行を消すため全テキストが1行になる。
-// 「▶推測:[質問]」を見つけてその直後から取り出す（除去方式は端の1文字を巻き込むことがあるため）
+// METAヘッダーからモード情報を取得
+function parseMetaFromStream(text: string): { mode: AnswerMode; category: string; reason: string } {
+  const m = text.match(/^##META:([^|#]*)\|([^|#]*)\|([^#]*)##\n?/)
+  if (!m) return { mode: 'ai', category: '', reason: '' }
+  const mode: AnswerMode = m[1] === 'registered' ? 'registered' : m[1] === 'hybrid' ? 'hybrid' : 'ai'
+  return { mode, category: m[2] || '', reason: m[3] || '' }
+}
+
+// FOLLOWUP以降のテキストを取得
+function extractFollowUp(text: string): string {
+  const idx = text.indexOf('##FOLLOWUP##')
+  if (idx === -1) return ''
+  return text.slice(idx + 12).trim()
+}
+
+// 表示用回答テキストを抽出（META・FOLLOWUP除去 → ▶推測以降を返す）
 function filterAnswer(text: string): string {
+  // METAヘッダーを除去
+  let t = text.replace(/^##META:[^#]*##\n?/, '')
+  // FOLLOWUPより後を除去
+  const fi = t.indexOf('##FOLLOWUP##')
+  if (fi !== -1) t = t.slice(0, fi)
   // ▶推測:[質問語尾] が見つかったらその直後を返す
-  const predMatch = text.match(
+  const predMatch = t.match(
     /▶[　 ]*推測[:：][　 ]*「?.{2,35}?(?:てください|ますか|でしょうか|ありますか|ですか|ください|ませんか|ましたか|いますか|でしたか|みてください|はどうですか|ありませんか|でしょう)/
   )
   if (predMatch && predMatch.index !== undefined) {
-    return text.slice(predMatch.index + predMatch[0].length).trim()
+    return t.slice(predMatch.index + predMatch[0].length).trim()
   }
-  // ▶推測がまだ来ていない（ストリーミング中の 📋 段階）→ 何も表示しない
-  if (text.includes('📋') || text.startsWith('▶')) return ''
-  // ▶推測なしで直接回答が来た場合はそのまま表示
-  return text.trim()
+  if (t.includes('📋') || t.startsWith('▶') || t.startsWith('##')) return ''
+  return t.trim()
 }
 
 /** メインアプリから受け取るヒントデータ */
@@ -36,6 +54,10 @@ interface OverlayHintData {
   isStreaming: boolean
   streamingText: string
   isRecording?: boolean
+  mode?: AnswerMode
+  matchCategory?: string
+  matchReason?: string
+  followUp?: string
 }
 
 /** overlayAPI の型定義（window に注入される） */
@@ -68,6 +90,12 @@ interface BrowserPos {
 
 export default function OverlayApp() {
   const [hintData, setHintData] = useState<OverlayHintData | null>(null)
+  const [selectedMode, setSelectedMode] = useState<AnswerMode>('ai')  // 事前選択モード
+  const selectedModeRef = useRef<AnswerMode>('ai')                     // staleクロージャ回避用ref
+  const [answerMode, setAnswerMode] = useState<AnswerMode>('ai')       // 実際に使われたモード
+  const [matchCategory, setMatchCategory] = useState('')
+  const [matchReason, setMatchReason] = useState('')
+  const [followUpText, setFollowUpText] = useState('')
   const [answerOpacity, setAnswerOpacity] = useState(1.0)
   const [windowOpacity, setWindowOpacity] = useState(0.9)
   const [textColor, setTextColor] = useState('#dcfce7')
@@ -134,6 +162,10 @@ export default function OverlayApp() {
                   setLiveTranscript('')
                   // まず直接状態を更新（APIなし）
                   setHintData({ question: q, answer: '', isStreaming: true, streamingText: '' })
+                  setAnswerMode('ai')
+                  setMatchCategory('')
+                  setMatchReason('')
+                  setFollowUpText('')
                   setIsMinimized(false)
                   try {
                     const hintRes = await fetch(`${apiBase}/api/interview/overlay-hint-stream`, {
@@ -146,6 +178,7 @@ export default function OverlayApp() {
                         user_background: localStorage.getItem('user_background') || null,
                         job_title: localStorage.getItem('job_title') || null,
                         interview_type_pref: localStorage.getItem('interview_type_pref') || null,
+                        forced_mode: selectedModeRef.current,
                       }),
                     })
                     console.log('[Overlay] hint-stream status=', hintRes.status)
@@ -155,7 +188,7 @@ export default function OverlayApp() {
                     }
                     const reader = hintRes.body.getReader()
                     const decoder = new TextDecoder()
-                    let answer = ''
+                    let raw = ''
                     while (true) {
                       const { done, value } = await reader.read()
                       if (done) break
@@ -164,17 +197,27 @@ export default function OverlayApp() {
                         if (line.startsWith('data: ')) {
                           const t = line.slice(6)
                           if (t === '[DONE]') continue
-                          answer += t
-                          const predQ = extractPredQ(answer)
+                          raw += t
+                          const { mode, category, reason } = parseMetaFromStream(raw)
+                          setAnswerMode(mode)
+                          setMatchCategory(category)
+                          setMatchReason(reason)
+                          const predQ = extractPredQ(raw)
                           setHintData(prev => {
                             if (!prev) return prev
-                            return { ...prev, question: predQ ?? prev.question, streamingText: answer, isStreaming: true }
+                            return { ...prev, question: predQ ?? prev.question, streamingText: raw, isStreaming: true }
                           })
                         }
                       }
                     }
-                    const finalQ = extractPredQ(answer)
-                    setHintData(prev => prev ? { ...prev, answer, isStreaming: false, streamingText: '', ...(finalQ ? { question: finalQ } : {}) } : prev)
+                    const { mode, category, reason } = parseMetaFromStream(raw)
+                    const fu = extractFollowUp(raw)
+                    setAnswerMode(mode)
+                    setMatchCategory(category)
+                    setMatchReason(reason)
+                    setFollowUpText(fu)
+                    const finalQ = extractPredQ(raw)
+                    setHintData(prev => prev ? { ...prev, answer: raw, isStreaming: false, streamingText: '', ...(finalQ ? { question: finalQ } : {}) } : prev)
                   } catch (e) {
                     console.error('[Overlay] hint error:', e)
                     setHintData(prev => prev ? { ...prev, isStreaming: false, answer: String(e) } : prev)
@@ -203,8 +246,12 @@ export default function OverlayApp() {
     window.overlayAPI!.setIgnoreMouse(true)
   }, [isElectronOverlay])
 
-  const fireHint = useCallback(async (q: string) => {
+  const fireHint = useCallback(async (q: string, forcedMode?: AnswerMode) => {
     setHintData({ question: q, answer: '', isStreaming: true, streamingText: '' })
+    setAnswerMode('ai')
+    setMatchCategory('')
+    setMatchReason('')
+    setFollowUpText('')
     setIsMinimized(false)
     const token = localStorage.getItem('token')
     try {
@@ -219,6 +266,7 @@ export default function OverlayApp() {
           question: q,
           interview_type: localStorage.getItem('interview_type') || '技術面接',
           user_background: localStorage.getItem('user_background') || null,
+          forced_mode: forcedMode || null,
         }),
       })
       if (!hintRes.ok || !hintRes.body) {
@@ -227,7 +275,7 @@ export default function OverlayApp() {
       }
       const reader = hintRes.body.getReader()
       const decoder = new TextDecoder()
-      let answer = ''
+      let raw = ''
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
@@ -236,19 +284,27 @@ export default function OverlayApp() {
           if (line.startsWith('data: ')) {
             const t = line.slice(6)
             if (t === '[DONE]') continue
-            answer += t
-            const predMatch = answer.match(/▶[　 ]*推測[:：][　 ]*「?([^「」\n]+)/)
+            raw += t
+            const { mode, category, reason } = parseMetaFromStream(raw)
+            setAnswerMode(mode)
+            setMatchCategory(category)
+            setMatchReason(reason)
+            const predQ = extractPredQ(raw)
             setHintData(prev => {
               if (!prev) return prev
-              const q = predMatch ? predMatch[1].trim().replace(/」.*$/, '') : prev.question
-              return { ...prev, question: q, streamingText: answer, isStreaming: true }
+              return { ...prev, question: predQ ?? prev.question, streamingText: raw, isStreaming: true }
             })
           }
         }
       }
-      const finalMatch = answer.match(/▶[　 ]*推測[:：][　 ]*「?([^「」\n]+)/)
-      const finalQ = finalMatch ? finalMatch[1].trim().replace(/」.*$/, '') : undefined
-      setHintData(prev => prev ? { ...prev, answer, isStreaming: false, streamingText: '', ...(finalQ ? { question: finalQ } : {}) } : prev)
+      const { mode, category, reason } = parseMetaFromStream(raw)
+      const fu = extractFollowUp(raw)
+      setAnswerMode(mode)
+      setMatchCategory(category)
+      setMatchReason(reason)
+      setFollowUpText(fu)
+      const finalQ = extractPredQ(raw)
+      setHintData(prev => prev ? { ...prev, answer: raw, isStreaming: false, streamingText: '', ...(finalQ ? { question: finalQ } : {}) } : prev)
     } catch { /* ignore */ }
   }, [apiBase])
 
@@ -278,7 +334,7 @@ export default function OverlayApp() {
             if (q.length < 5) return
             accumulatedRef.current = ''
             setLiveTranscript('')
-            await fireHint(q)
+            await fireHint(q, selectedModeRef.current)
           }, 3000)
         } catch { /* ignore */ }
       }, 2000)
@@ -340,6 +396,10 @@ export default function OverlayApp() {
     if (api) {
       ipcUnsubscribe = api.onHintsUpdated((data) => {
         setHintData(data)
+        if (data.mode) setAnswerMode(data.mode)
+        if (data.matchCategory !== undefined) setMatchCategory(data.matchCategory)
+        if (data.matchReason !== undefined) setMatchReason(data.matchReason)
+        if (data.followUp !== undefined) setFollowUpText(data.followUp)
         if (data.question) setIsMinimized(false)
       })
     }
@@ -656,6 +716,39 @@ export default function OverlayApp() {
               minHeight: 0,
             }}
           >
+            {/* モード選択（常時表示・質問が来る前に選ぶ） */}
+            <div style={{ display: 'flex', gap: 4, marginBottom: 10 }}>
+              {([
+                { key: 'ai' as AnswerMode, label: '🤖 AI生成' },
+                { key: 'registered' as AnswerMode, label: '✓ 登録回答' },
+                { key: 'hybrid' as AnswerMode, label: '⚡ ハイブリッド' },
+              ]).map(({ key, label }) => {
+                const isActive = selectedMode === key
+                return (
+                  <button
+                    key={key}
+                    onClick={() => { selectedModeRef.current = key; setSelectedMode(key) }}
+                    style={{
+                      flex: 1,
+                      padding: '5px 0',
+                      borderRadius: 6,
+                      fontSize: 11,
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      border: isActive ? '1px solid rgba(255,255,255,0.5)' : '1px solid rgba(255,255,255,0.2)',
+                      background: isActive
+                        ? (key === 'registered' ? '#065f46' : key === 'hybrid' ? '#78350f' : '#312e81')
+                        : 'rgba(255,255,255,0.08)',
+                      color: isActive ? '#fff' : '#94a3b8',
+                      transition: 'all 0.15s',
+                    }}
+                  >
+                    {label}
+                  </button>
+                )
+              })}
+            </div>
+
             {/* ライブ文字起こし表示 */}
             {liveTranscript && (
               <div style={{
@@ -732,22 +825,13 @@ export default function OverlayApp() {
                   </div>
                 )}
 
-                {/* 模範回答 */}
+                {/* 回答案 */}
                 {displayText && (
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '0 0 5px' }}>
-                      <p
-                        style={{
-                          margin: 0,
-                          fontSize: 10,
-                          color: '#86efac',
-                          fontWeight: 600,
-                          textTransform: 'uppercase',
-                          letterSpacing: '0.1em',
-                        }}
-                      >
-                        模範回答
-                      </p>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {matchReason && <p style={{ margin: 0, fontSize: 9, color: '#64748b' }}>{matchReason}</p>}
+
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <p style={{ margin: 0, fontSize: 10, color: '#86efac', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.1em' }}>回答案</p>
                       <label style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#64748b', fontSize: 10 }}>
                         <span>透明度</span>
                         <input
@@ -761,40 +845,24 @@ export default function OverlayApp() {
                         />
                       </label>
                     </div>
-                    <div
-                      style={{
-                        background: 'rgba(5, 46, 22, 0.4)',
-                        borderRadius: 8,
-                        padding: '10px 12px',
-                        borderLeft: '3px solid #22c55e',
-                        opacity: answerOpacity,
-                      }}
-                    >
-                      <p
-                        style={{
-                          margin: 0,
-                          fontSize: 13,
-                          color: textColor,
-                          lineHeight: 1.7,
-                          whiteSpace: 'pre-wrap',
-                        }}
-                      >
+                    <div style={{ background: 'rgba(5,46,22,0.4)', borderRadius: 8, padding: '10px 12px', borderLeft: '3px solid #22c55e', opacity: answerOpacity }}>
+                      <p style={{ margin: 0, fontSize: 13, color: textColor, lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>
                         {displayText}
                         {hintData.isStreaming && (
-                          <span
-                            style={{
-                              display: 'inline-block',
-                              width: 2,
-                              height: '1em',
-                              background: '#22c55e',
-                              marginLeft: 2,
-                              animation: 'blink 0.8s step-end infinite',
-                              verticalAlign: 'text-bottom',
-                            }}
-                          />
+                          <span style={{ display: 'inline-block', width: 2, height: '1em', background: '#22c55e', marginLeft: 2, animation: 'blink 0.8s step-end infinite', verticalAlign: 'text-bottom' }} />
                         )}
                       </p>
                     </div>
+
+                    {/* 深掘り対策 */}
+                    {!hintData.isStreaming && followUpText && (
+                      <div>
+                        <p style={{ margin: '4px 0 4px', fontSize: 10, color: '#fb923c', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.1em' }}>深掘り対策</p>
+                        <div style={{ background: 'rgba(124,45,18,0.25)', borderRadius: 8, padding: '8px 12px', borderLeft: '3px solid #f97316' }}>
+                          <p style={{ margin: 0, fontSize: 12, color: '#fed7aa', lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>{followUpText}</p>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

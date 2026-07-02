@@ -13,6 +13,7 @@ interface ElectronAPI {
   expand: () => void
   collapse: () => void
   minimize: () => void
+  maximize: () => void
   close: () => void
   hide: () => void
   show: () => void
@@ -28,6 +29,10 @@ interface ElectronAPI {
     answer: string
     isStreaming: boolean
     streamingText: string
+    mode?: string
+    matchCategory?: string
+    matchReason?: string
+    followUp?: string
   }) => void
   toggleOverlay: () => void
   showOverlay: () => void

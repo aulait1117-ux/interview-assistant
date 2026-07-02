@@ -22,6 +22,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /** ウィンドウを閉じる */
   close: () => ipcRenderer.send('window:close'),
 
+  /** ウィンドウを最大化/元に戻す */
+  maximize: () => ipcRenderer.send('window:maximize'),
+
   /** ウィンドウを非表示にする */
   hide: () => ipcRenderer.send('window:hide'),
 

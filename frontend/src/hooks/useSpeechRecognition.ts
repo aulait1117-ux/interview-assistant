@@ -1,16 +1,28 @@
 import { useState, useRef, useCallback } from 'react'
 import { InterviewType } from '../types'
 
+export type MicPermissionError = 'denied' | 'not-found' | 'unsupported' | 'unknown'
+
 interface SpeechRecognitionHook {
   isListening: boolean
   transcript: string
   detectedQuestion: string
+  micSupported: boolean
+  permissionError: MicPermissionError | null
   startListening: () => void
   stopListening: () => void
   resetTranscript: () => void
+  clearPermissionError: () => void
 }
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+
+// ブラウザがマイク録音に対応しているか（getUserMedia + MediaRecorder）
+function checkMicSupported(): boolean {
+  if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) return false
+  if (typeof window === 'undefined' || typeof (window as any).MediaRecorder === 'undefined') return false
+  return true
+}
 
 export function useSpeechRecognition(
   _interviewType: InterviewType,
@@ -19,19 +31,35 @@ export function useSpeechRecognition(
   const [isListening, setIsListening] = useState(false)
   const [transcript, setTranscript] = useState('')
   const [detectedQuestion, setDetectedQuestion] = useState('')
+  const [permissionError, setPermissionError] = useState<MicPermissionError | null>(null)
+  const micSupported = checkMicSupported()
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const onQuestionDetectedRef = useRef(onQuestionDetected)
   onQuestionDetectedRef.current = onQuestionDetected
 
+  const clearPermissionError = useCallback(() => setPermissionError(null), [])
+
   const startListening = useCallback(async () => {
     if (mediaRecorderRef.current) return
 
+    if (!checkMicSupported()) {
+      setPermissionError('unsupported')
+      return
+    }
+
+    setPermissionError(null)
     let stream: MediaStream
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    } catch {
-      alert('マイクへのアクセスが許可されていません。')
+    } catch (e: any) {
+      if (e?.name === 'NotAllowedError' || e?.name === 'PermissionDeniedError') {
+        setPermissionError('denied')
+      } else if (e?.name === 'NotFoundError' || e?.name === 'DevicesNotFoundError') {
+        setPermissionError('not-found')
+      } else {
+        setPermissionError('unknown')
+      }
       return
     }
 
@@ -114,5 +142,8 @@ export function useSpeechRecognition(
     chunksRef.current = []
   }, [])
 
-  return { isListening, transcript, detectedQuestion, startListening, stopListening, resetTranscript }
+  return {
+    isListening, transcript, detectedQuestion, micSupported, permissionError,
+    startListening, stopListening, resetTranscript, clearPermissionError,
+  }
 }

@@ -73,16 +73,22 @@ function createOverlayWindow() {
 // 16x16 の青い正方形アイコンを RGBA バッファから直接生成する
 // 外部ファイル不要・確実に動作する方法
 function createTrayIcon() {
-  const size = 16;
-  // RGBA 4バイト/ピクセル: R=59, G=130, B=246 (Tailwind blue-500), A=255
-  const buf = Buffer.alloc(size * size * 4);
-  for (let i = 0; i < size * size; i++) {
-    buf[i * 4 + 0] = 59;   // R
-    buf[i * 4 + 1] = 130;  // G
-    buf[i * 4 + 2] = 246;  // B
-    buf[i * 4 + 3] = 255;  // A
+  // アプリ本体と同じアイコン画像（assets/icon.png）を使う。
+  // __dirname は electron/ 配下なので、開発時・パッケージ時（asar内）どちらでも
+  // ../assets/icon.png で正しく解決できる
+  const iconPath = path.join(__dirname, '..', 'assets', 'icon.png');
+  const image = nativeImage.createFromPath(iconPath);
+  if (image.isEmpty()) {
+    // 万一読み込めなかった場合の最低限のフォールバック（無地の塗りつぶし）
+    const size = 16;
+    const buf = Buffer.alloc(size * size * 4);
+    for (let i = 0; i < size * size; i++) {
+      buf[i * 4 + 0] = 59; buf[i * 4 + 1] = 130; buf[i * 4 + 2] = 246; buf[i * 4 + 3] = 255;
+    }
+    return nativeImage.createFromBuffer(buf, { width: size, height: size });
   }
-  return nativeImage.createFromBuffer(buf, { width: size, height: size });
+  // Windowsのトレイは16x16が基本（高DPI環境はOS側が自動スケーリング）
+  return image.resize({ width: 16, height: 16, quality: 'best' });
 }
 
 let mainWindow = null;
@@ -133,7 +139,10 @@ function buildTrayMenu() {
     {
       label: 'ウィンドウを表示',
       click: () => {
-        if (!mainWindow) return;
+        if (!mainWindow || mainWindow.isDestroyed()) {
+          createWindow();
+          return;
+        }
         mainWindow.show();
         mainWindow.focus();
         mainWindow.moveTop();
@@ -152,9 +161,12 @@ function createTray() {
   tray.setToolTip('面接サポート');
   tray.setContextMenu(buildTrayMenu());
 
-  // 左クリックでウィンドウをトグル表示/非表示
+  // 左クリックでウィンドウをトグル表示/非表示（閉じられていれば再作成する）
   tray.on('click', () => {
-    if (!mainWindow) return;
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      createWindow();
+      return;
+    }
     if (mainWindow.isVisible()) {
       mainWindow.hide();
     } else {
@@ -199,21 +211,22 @@ function createWindow() {
   const { width: screenWidth, height: screenHeight } = primaryDisplay.workAreaSize;
 
   mainWindow = new BrowserWindow({
-    width: WIDGET_SIZE.width,
-    height: WIDGET_SIZE.height,
-    x: screenWidth - WIDGET_SIZE.width - 20,   // 右端に配置
-    y: Math.floor((screenHeight - WIDGET_SIZE.height) / 2),
+    // 初回起動時は画面いっぱいに開く（ウィジェットサイズだと料金プラン画面等が
+    // 縦に潰れて表示されるため）。ユーザーが「縮小」ボタンでウィジェットサイズへ
+    // 切り替えられる仕組みは維持し、最小サイズだけウィジェットサイズに揃えておく
+    width: screenWidth,
+    height: screenHeight,
+    x: 0,
+    y: 0,
     minWidth: WIDGET_SIZE.width,
     minHeight: WIDGET_SIZE.height,
-    maxWidth: 800,
-    maxHeight: 900,
-    resizable: false,
+    resizable: true,
 
-    // 透明・フレームレス・常時最前面
-    transparent: true,
+    // フレームレス・常時最前面（メインウィンドウは不透明）
+    transparent: false,
     alwaysOnTop: true,
     frame: false,
-    backgroundColor: '#00000000',
+    backgroundColor: '#0f172a',
 
     // macOS 向け追加設定
     titleBarStyle: 'hidden',
@@ -288,6 +301,16 @@ ipcMain.on('window:collapse', () => {
 // ウィンドウを最小化
 ipcMain.on('window:minimize', () => {
   if (mainWindow) mainWindow.minimize();
+});
+
+// ウィンドウを最大化/元に戻す
+ipcMain.on('window:maximize', () => {
+  if (!mainWindow) return;
+  if (mainWindow.isMaximized()) {
+    mainWindow.unmaximize();
+  } else {
+    mainWindow.maximize();
+  }
 });
 
 // ウィンドウを閉じる（アプリ終了）
@@ -454,6 +477,13 @@ ipcMain.on('overlay:resize-start', (_event, { dir, startX, startY, origX, origY,
 
 ipcMain.on('overlay:resize-end', () => {
   if (resizeInterval) { clearInterval(resizeInterval); resizeInterval = null; }
+});
+
+// オーバーレイウィンドウを強制リロード（開発時のHMR代替）
+ipcMain.on('overlay:reload', () => {
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.reload();
+  }
 });
 
 // --- アプリのライフサイクル ---

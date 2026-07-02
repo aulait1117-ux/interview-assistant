@@ -90,6 +90,11 @@ async def init_db():
                 FOREIGN KEY (session_id) REFERENCES sessions(id)
             )
         """)
+        # マイグレーション: 同一セッション内でのエピソード重複検知用 category カラムを追加
+        try:
+            await db.execute("ALTER TABLE qa_pairs ADD COLUMN category TEXT")
+        except Exception:
+            pass  # カラムが既に存在する場合は無視
         await db.execute("""
             CREATE TABLE IF NOT EXISTS practice_questions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

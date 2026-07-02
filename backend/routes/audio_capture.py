@@ -96,8 +96,34 @@ def _transcribe_sync(audio_data: np.ndarray, samplerate: int) -> str:
 def _record_worker():
     """録音とWhisper処理を並列実行。recorder.record()のフリーズを自己検出して再起動する"""
     global _last_rms, _chunks_processed, _last_chunk_time
+    import sys
     import queue as q_mod
+    import ctypes
+
+    # COM初期化（このスレッド専用）: soundcardライブラリはモジュール初回import時に
+    # 一度だけCoInitializeExを呼ぶ実装のため、watchdogが録音スレッドを再作成すると
+    # 2回目以降のスレッドはCOM未初期化のまま音声デバイスAPIを呼び、
+    # 0x800401f0 (CO_E_NOTINITIALIZED) で永久に失敗し続けるバグがあった。
+    # ただし soundcard がまだ一度もimportされていない最初のスレッドで先にCoInitializeExを
+    # 呼んでしまうと、soundcard側の初期化が S_FALSE（=既に初期化済みという正常値）を
+    # 異常値として誤判定してクラッシュする別バグを踏むため、
+    # 「soundcardが既にimport済み（＝2回目以降のスレッド）の場合だけ」自前で初期化する。
+    COINIT_MULTITHREADED = 0x0
+    _com_initialized = False
+    if 'soundcard' in sys.modules:
+        _com_initialized = ctypes.windll.ole32.CoInitializeEx(None, COINIT_MULTITHREADED) >= 0
+
     import soundcard as sc
+
+    try:
+        _record_worker_loop(sc, q_mod)
+    finally:
+        if _com_initialized:
+            ctypes.windll.ole32.CoUninitialize()
+
+
+def _record_worker_loop(sc, q_mod):
+    global _last_rms, _chunks_processed, _last_chunk_time
 
     SAMPLERATE = 16000
     CHUNK_FRAMES = int(SAMPLERATE * 0.1)   # 100ms単位

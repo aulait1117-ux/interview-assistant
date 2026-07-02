@@ -10,6 +10,7 @@ import PricingPage from './components/PricingPage'
 import AppHeader from './components/AppHeader'
 import TitleBar from './components/TitleBar'
 import WidgetMode from './components/WidgetMode'
+import DesktopGuide from './components/DesktopGuide'
 
 interface SessionState {
   sessionId: string
@@ -21,6 +22,17 @@ interface SessionState {
 }
 
 export default function App() {
+  // /desktop-guide はログイン状態に関係なく誰でも見られる説明ページのため、
+  // 認証・セットアップのロジックより先に判定する
+  const [pathname, setPathname] = useState(() =>
+    typeof window !== 'undefined' ? window.location.pathname : '/'
+  )
+  useEffect(() => {
+    const onPopState = () => setPathname(window.location.pathname)
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
+
   const auth = useAuthProvider()
   const [appMode, setAppMode] = useState<AppMode>('home')
   const [selectedType] = useState<InterviewType>('面接アシスト')
@@ -36,9 +48,9 @@ export default function App() {
   })
   const [paymentPending, setPaymentPending] = useState(false)
   // Electron環境では起動時にウィジェット（コンパクト）モードで開始する
-  const [isCompact, setIsCompact] = useState<boolean>(
-    () => !!(typeof window !== 'undefined' && window.electronAPI?.isElectron)
-  )
+  // 起動時は常に展開状態（全画面）で開く。縮小はユーザーがTitleBarの「縮小」ボタンで
+  // 明示的に選んだ時だけ（以前はElectron起動時に自動でコンパクト表示になっていた）
+  const [isCompact, setIsCompact] = useState<boolean>(false)
 
   // アプリ起動中ずっと60秒ごとに使用時間を記録（無料・短期プランのみ、管理者は除外）
   const { user, refreshUser } = auth
@@ -76,6 +88,7 @@ export default function App() {
         interview_type: selectedType,
         user_background: background,
       })
+      localStorage.setItem('overlay_session_id', res.data.session_id)
       setSession({ sessionId: res.data.session_id, interviewType: selectedType, profile, mode: 'realtime', jobTitle: profile.jobTitle, interviewTypePref: profile.interviewTypePref })
       setAppMode('realtime')
     } catch (err: unknown) {
@@ -109,11 +122,18 @@ export default function App() {
     window.history.replaceState({}, '', window.location.pathname)
   }, [paymentSuccess, auth.user])
 
+  // インストール版の説明ページ：ログイン状態に関係なく誰でも見られる
+  if (pathname === '/desktop-guide') {
+    return <DesktopGuide onBack={(e) => {
+      e.preventDefault()
+      window.history.pushState({}, '', '/')
+      setPathname('/')
+    }} />
+  }
+
   if (auth.isLoading) {
-    // Electron widget mode: ローディング中もウィジェットを表示（Renderスリープ中でも固まらない）
-    if (typeof window !== 'undefined' && (window as any).electronAPI?.isElectron) {
-      return <WidgetMode onExpand={() => {}} />
-    }
+    // 起動時は最初から全画面で開く仕様のため、コンパクトなWidgetMode（「開く」ボタンのみの簡易画面）は
+    // 表示せず、通常のローディング表示のまま本来の画面（ホーム/設定画面）へ直接進める
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#94a3b8' }}>
         読み込み中...
@@ -228,11 +248,17 @@ function buildBackground(p: UserProfile): string {
   if (p.grade) parts.push(`学年: ${p.grade}`)
   if (p.strength) parts.push(`強み: ${p.strength}`)
   if (p.experience) parts.push(`ガクチカ: ${p.experience}`)
+  if (p.selfPR) parts.push(`自己PR: ${p.selfPR}`)
+  if (p.weakness) parts.push(`長所・短所: ${p.weakness}`)
+  if (p.careerVision) parts.push(`キャリアビジョン: ${p.careerVision}`)
+  if (p.skills) parts.push(`資格・スキル: ${p.skills}`)
+  if (p.partTimeWork) parts.push(`アルバイト・社会人経験: ${p.partTimeWork}`)
   if (p.companyName) parts.push(`志望先: ${p.companyName}`)
   if (p.industry) parts.push(`業界/分野: ${p.industry}`)
   if (p.jobType) parts.push(`職種/テーマ: ${p.jobType}`)
   if (p.motivation) parts.push(`志望理由: ${p.motivation}`)
   if (p.jobTitle) parts.push(`応募職種: ${p.jobTitle}`)
   if (p.interviewTypePref) parts.push(`面接タイプ: ${p.interviewTypePref}`)
+  if (p.companyResearchTips) parts.push(`企業研究メモ（面接対策）: ${p.companyResearchTips}`)
   return parts.join('\n')
 }

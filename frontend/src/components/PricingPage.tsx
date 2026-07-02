@@ -71,6 +71,7 @@ export default function PricingPage({ onBack }: Props) {
   const { user, refreshUser } = useAuth()
   const [plans, setPlans] = useState<Plan[]>([])
   const [isLoading, setIsLoading] = useState(false)
+  const [checkoutError, setCheckoutError] = useState<string | null>(null)
   const [selectedProvider, setSelectedProvider] = useState<string>('stripe_card')
 
   useEffect(() => {
@@ -79,6 +80,7 @@ export default function PricingPage({ onBack }: Props) {
 
   const handleCheckout = async (planId: string) => {
     setIsLoading(true)
+    setCheckoutError(null)
     try {
       const res = await axios.post<{ checkout_url: string }>('/api/billing/checkout', {
         plan: planId,
@@ -87,7 +89,7 @@ export default function PricingPage({ onBack }: Props) {
       window.location.href = res.data.checkout_url
     } catch (err: any) {
       const msg = err.response?.data?.detail || '決済エラーが発生しました'
-      alert(msg)
+      setCheckoutError(msg)
     } finally {
       setIsLoading(false)
     }
@@ -142,6 +144,12 @@ export default function PricingPage({ onBack }: Props) {
             <span>全機能使い放題</span>
           </div>
         </div>
+
+        {checkoutError && (
+          <div style={{ color: '#f87171', background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)', borderRadius: 8, padding: '10px 16px', fontSize: 14, marginBottom: 16 }}>
+            ⚠️ {checkoutError}
+          </div>
+        )}
 
         <div className="pricing-grid">
           {allPlans.map(plan => {
@@ -207,7 +215,6 @@ export default function PricingPage({ onBack }: Props) {
                 {/* 機能一覧 */}
                 <div className="plan-features">
                   <p>✓ リアルタイム面接補助</p>
-                  <p>✓ 練習モード</p>
                   <p>✓ 企業情報自動調査</p>
                   {plan.id !== 'free' && <p>✓ 模擬面接モード</p>}
                   {plan.id !== 'free' && <p>✓ 履歴・総評保存</p>}
