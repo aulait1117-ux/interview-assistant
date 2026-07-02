@@ -28,10 +28,20 @@ async def fetch_page_text(url: str, max_chars: int = 3000) -> str:
         return ""
 
 
+# Wikimedia's User-Agent policy (https://meta.wikimedia.org/wiki/User-Agent_policy) requires
+# a descriptive UA with contact info; generic bot UAs from cloud-hosted IPs (like Render) can
+# get silently rate-limited/blocked without one, which was hiding company-search failures in prod.
+_WIKI_USER_AGENT = (
+    "KigyodoInterviewAssistant/1.0 "
+    "(https://interview-assistant-frontend-gcgj.onrender.com; aulait11.17@gmail.com)"
+)
+
+
 async def fetch_company_info_by_name(company_name: str) -> str:
     """
     Fetch company information by name using free APIs (no API key required).
-    Tries Wikipedia first (with name variations), then DuckDuckGo Instant Answer API.
+    Tries Wikipedia first (with name variations, then title search as a fallback for
+    non-exact matches), then DuckDuckGo Instant Answer API.
     Returns a text string with whatever info was found.
     """
     # Try multiple name variations for better Wikipedia matching
@@ -44,6 +54,14 @@ async def fetch_company_info_by_name(company_name: str) -> str:
     for name in name_variants:
         encoded = urllib.parse.quote(name)
         wiki_text = await _try_wikipedia(encoded)
+        if wiki_text:
+            return wiki_text
+
+    # Exact-title lookups failed (common when the page title has a suffix/disambiguation) —
+    # resolve the closest real title via Wikipedia's search API and retry.
+    searched_title = await _try_wikipedia_search(company_name)
+    if searched_title:
+        wiki_text = await _try_wikipedia(urllib.parse.quote(searched_title))
         if wiki_text:
             return wiki_text
 
@@ -60,8 +78,8 @@ async def _try_wikipedia(encoded_name: str) -> str:
     """Try Japanese Wikipedia summary API."""
     try:
         url = f"https://ja.wikipedia.org/api/rest_v1/page/summary/{encoded_name}"
-        async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
-            headers = {"User-Agent": "InterviewBot/1.0 (interview-assistant)"}
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+            headers = {"User-Agent": _WIKI_USER_AGENT}
             res = await client.get(url, headers=headers)
             if res.status_code == 200:
                 data = res.json()
@@ -69,8 +87,36 @@ async def _try_wikipedia(encoded_name: str) -> str:
                 title = data.get("title", "")
                 if extract and len(extract) > 50:
                     return f"Wikipedia「{title}」より:\n{extract}"
-    except Exception:
-        pass
+            else:
+                logger.warning("wikipedia summary non-200 for %s: %s", encoded_name, res.status_code)
+    except Exception as e:
+        logger.warning("_try_wikipedia failed for %s: %s", encoded_name, e)
+    return ""
+
+
+async def _try_wikipedia_search(company_name: str) -> str:
+    """Resolve a company name to its closest real Wikipedia title via the search API."""
+    try:
+        url = "https://ja.wikipedia.org/w/api.php"
+        params = {
+            "action": "query",
+            "list": "search",
+            "srsearch": company_name,
+            "srlimit": 1,
+            "format": "json",
+        }
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+            headers = {"User-Agent": _WIKI_USER_AGENT}
+            res = await client.get(url, params=params, headers=headers)
+            if res.status_code == 200:
+                data = res.json()
+                hits = data.get("query", {}).get("search", [])
+                if hits:
+                    return hits[0].get("title", "")
+            else:
+                logger.warning("wikipedia search non-200 for %s: %s", company_name, res.status_code)
+    except Exception as e:
+        logger.warning("_try_wikipedia_search failed for %s: %s", company_name, e)
     return ""
 
 
@@ -78,8 +124,8 @@ async def _try_duckduckgo_instant(encoded_name: str) -> str:
     """Try DuckDuckGo Instant Answer API (free official JSON endpoint, not scraping)."""
     try:
         url = f"https://api.duckduckgo.com/?q={encoded_name}&format=json&no_html=1&skip_disambig=1"
-        async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
-            headers = {"User-Agent": "InterviewBot/1.0 (interview-assistant)"}
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+            headers = {"User-Agent": _WIKI_USER_AGENT}
             res = await client.get(url, headers=headers)
             if res.status_code == 200:
                 data = res.json()
@@ -104,6 +150,8 @@ async def _try_duckduckgo_instant(encoded_name: str) -> str:
 
                 if parts:
                     return "\n\n".join(parts)
-    except Exception:
-        pass
+            else:
+                logger.warning("duckduckgo non-200 for %s: %s", encoded_name, res.status_code)
+    except Exception as e:
+        logger.warning("_try_duckduckgo_instant failed for %s: %s", encoded_name, e)
     return ""

@@ -17,6 +17,12 @@ interface SpeechRecognitionHook {
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
+// 何秒ごとに録音を区切ってWhisperへ送るか（区切らないとstopを押すまで一切文字起こしされず
+// 「音声を拾わない」ように見えるため、デスクトップ版のポーリング方式に合わせて区切る）
+const SEGMENT_MS = 4000
+// 区切った文章がこの間隔だけ途切れたら「ひと区切りの質問」とみなして確定する
+const SILENCE_MS = 3000
+
 // ブラウザがマイク録音に対応しているか（getUserMedia + MediaRecorder）
 function checkMicSupported(): boolean {
   if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) return false
@@ -34,14 +40,96 @@ export function useSpeechRecognition(
   const [permissionError, setPermissionError] = useState<MicPermissionError | null>(null)
   const micSupported = checkMicSupported()
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-  const chunksRef = useRef<Blob[]>([])
+  const streamRef = useRef<MediaStream | null>(null)
+  const shouldContinueRef = useRef(false)
+  const segmentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const accumulatedRef = useRef('')
   const onQuestionDetectedRef = useRef(onQuestionDetected)
   onQuestionDetectedRef.current = onQuestionDetected
 
   const clearPermissionError = useCallback(() => setPermissionError(null), [])
 
+  const transcribeBlob = useCallback(async (blob: Blob): Promise<string> => {
+    if (blob.size < 100) return ''
+    try {
+      const formData = new FormData()
+      formData.append('audio', blob, 'recording.webm')
+      const res = await fetch(`${API_BASE}/api/speech/transcribe`, {
+        method: 'POST',
+        body: formData,
+      })
+      const data = await res.json()
+      return (data.text ?? '').trim()
+    } catch (e) {
+      console.error('Transcription error:', e)
+      return ''
+    }
+  }, [])
+
+  const flushAccumulated = useCallback(() => {
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current)
+      silenceTimerRef.current = null
+    }
+    const q = accumulatedRef.current.trim()
+    accumulatedRef.current = ''
+    setTranscript('')
+    if (q.length >= 5) {
+      setDetectedQuestion(q)
+      onQuestionDetectedRef.current(q)
+    }
+  }, [])
+
+  // 1区切り分（SEGMENT_MS）だけ録音し、文字起こし結果を蓄積しながら次の区切りへ続ける。
+  // 「stopを押すまで何も起きない」単発録音ではなく、話している間は自動でヒント検出が走るようにする
+  const startSegment = useCallback(() => {
+    const stream = streamRef.current
+    if (!stream || !shouldContinueRef.current) return
+
+    const recorder = new MediaRecorder(stream)
+    const chunks: Blob[] = []
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunks.push(e.data)
+    }
+    recorder.onerror = (e) => {
+      setTranscript('録音エラー: ' + String(e))
+    }
+    recorder.onstop = async () => {
+      const isFinal = !shouldContinueRef.current
+      const mimeType = recorder.mimeType || 'audio/webm'
+      const blob = new Blob(chunks, { type: mimeType })
+      const text = await transcribeBlob(blob)
+      if (text) {
+        accumulatedRef.current = (accumulatedRef.current + ' ' + text).trim()
+        setTranscript(accumulatedRef.current)
+      }
+
+      if (isFinal) {
+        flushAccumulated()
+        return
+      }
+
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
+      silenceTimerRef.current = setTimeout(flushAccumulated, SILENCE_MS)
+
+      startSegment()
+    }
+
+    mediaRecorderRef.current = recorder
+    try {
+      recorder.start()
+    } catch (e) {
+      setTranscript('録音開始エラー: ' + String(e))
+      return
+    }
+    segmentTimerRef.current = setTimeout(() => {
+      if (recorder.state !== 'inactive') recorder.stop()
+    }, SEGMENT_MS)
+  }, [transcribeBlob, flushAccumulated])
+
   const startListening = useCallback(async () => {
-    if (mediaRecorderRef.current) return
+    if (shouldContinueRef.current) return
 
     if (!checkMicSupported()) {
       setPermissionError('unsupported')
@@ -63,83 +151,37 @@ export function useSpeechRecognition(
       return
     }
 
-    chunksRef.current = []
-    const recorder = new MediaRecorder(stream)
-
-    recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) chunksRef.current.push(e.data)
-    }
-
-    recorder.onstop = async () => {
-      stream.getTracks().forEach(t => t.stop())
-      const mimeType = recorder.mimeType || 'audio/webm'
-      const blob = new Blob(chunksRef.current, { type: mimeType })
-      chunksRef.current = []
-
-      setTranscript(`音声取得: ${blob.size}バイト`)
-      if (blob.size < 100) {
-        setTranscript(`音声が短すぎます (${blob.size}バイト)。マイクがミュートになっていないか確認してください。`)
-        return
-      }
-
-      setTranscript('文字起こし中...')
-      try {
-        const formData = new FormData()
-        formData.append('audio', blob, 'recording.webm')
-        const res = await fetch(`${API_BASE}/api/speech/transcribe`, {
-          method: 'POST',
-          body: formData,
-        })
-        const data = await res.json()
-        const text: string = data.text ?? ''
-        setTranscript(text)
-        if (text.length > 0) {
-          setDetectedQuestion(text)
-          onQuestionDetectedRef.current(text)
-        }
-      } catch (e) {
-        console.error('Transcription error:', e)
-        setTranscript('文字起こしに失敗しました')
-      }
-    }
-
-    recorder.onerror = (e) => {
-      setTranscript('録音エラー: ' + String(e))
-    }
-
-    mediaRecorderRef.current = recorder
-    try {
-      recorder.start(250)
-    } catch (e) {
-      setTranscript('録音開始エラー: ' + String(e))
-      mediaRecorderRef.current = null
-      return
-    }
+    streamRef.current = stream
+    shouldContinueRef.current = true
+    accumulatedRef.current = ''
     setIsListening(true)
     setTranscript('録音中...')
-  }, [])
+    startSegment()
+  }, [startSegment])
 
   const stopListening = useCallback(() => {
-    const recorder = mediaRecorderRef.current
-    if (!recorder) return
-    mediaRecorderRef.current = null
+    if (!shouldContinueRef.current) return
+    shouldContinueRef.current = false
+    if (segmentTimerRef.current) {
+      clearTimeout(segmentTimerRef.current)
+      segmentTimerRef.current = null
+    }
     setIsListening(false)
     setTranscript('処理中...')
-    try {
-      if (recorder.state !== 'inactive') {
-        recorder.stop()
-      } else {
-        setTranscript(`録音状態エラー: ${recorder.state}`)
-      }
-    } catch (e) {
-      setTranscript('停止エラー: ' + String(e))
+
+    const recorder = mediaRecorderRef.current
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.stop()
     }
+    mediaRecorderRef.current = null
+    streamRef.current?.getTracks().forEach(t => t.stop())
+    streamRef.current = null
   }, [])
 
   const resetTranscript = useCallback(() => {
     setTranscript('')
     setDetectedQuestion('')
-    chunksRef.current = []
+    accumulatedRef.current = ''
   }, [])
 
   return {

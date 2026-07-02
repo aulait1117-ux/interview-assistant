@@ -4,6 +4,7 @@ import FeedbackPanel from './FeedbackPanel'
 import { useAuth } from '../hooks/useAuth'
 import { sendHintToOverlay } from './OverlayButton'
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition'
+import { navigateTo } from '../utils/navigate'
 
 const MODE_OPTIONS: { key: AnswerMode; label: string; description: string }[] = [
   { key: 'ai', label: 'AI生成', description: '登録回答がない質問にも、AIがその場で回答案を作ります' },
@@ -602,7 +603,7 @@ export default function RealtimeMode({ sessionId, interviewType, userBackground,
       {!isElectron && (
         <div style={{ fontSize: 11, color: '#64748b', padding: '4px 20px', background: 'rgba(255,255,255,0.02)' }}>
           録音は面接練習・準備のために使用してください。第三者との会話を録音する場合は、相手の同意や利用規約を確認してください。
-          {' '}<a href="/desktop-guide" style={{ color: '#818cf8', whiteSpace: 'nowrap' }}>詳しくはこちら</a>
+          {' '}<a href="/desktop-guide" onClick={(e) => navigateTo('/desktop-guide', e)} style={{ color: '#818cf8', whiteSpace: 'nowrap' }}>詳しくはこちら</a>
         </div>
       )}
 

@@ -29,8 +29,13 @@ export default function App() {
   )
   useEffect(() => {
     const onPopState = () => setPathname(window.location.pathname)
+    const onAppNavigate = (e: Event) => setPathname((e as CustomEvent<string>).detail)
     window.addEventListener('popstate', onPopState)
-    return () => window.removeEventListener('popstate', onPopState)
+    window.addEventListener('app-navigate', onAppNavigate)
+    return () => {
+      window.removeEventListener('popstate', onPopState)
+      window.removeEventListener('app-navigate', onAppNavigate)
+    }
   }, [])
 
   const auth = useAuthProvider()
