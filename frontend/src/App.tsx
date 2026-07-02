@@ -217,6 +217,13 @@ export default function App() {
           onStart={() => setAppMode('setup')}
           onPricing={() => setShowPricing(true)}
           onLogin={() => setShowAuthModal(true)}
+          onNavigateGuide={(e) => {
+            // Render静的サイト側のSPAリライト設定が未反映のため、フルページ遷移だと
+            // /desktop-guide が404になる。ページ内遷移（pushState）で回避する
+            e.preventDefault()
+            window.history.pushState({}, '', '/desktop-guide')
+            setPathname('/desktop-guide')
+          }}
         />
       ) : appMode === 'setup' ? (
         <SetupForm
