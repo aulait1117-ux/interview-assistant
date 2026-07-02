@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { InterviewType } from '../types'
 
 export type MicPermissionError = 'denied' | 'not-found' | 'unsupported' | 'unknown'
@@ -182,6 +182,24 @@ export function useSpeechRecognition(
     setTranscript('')
     setDetectedQuestion('')
     accumulatedRef.current = ''
+  }, [])
+
+  // コンポーネントのアンマウント時（画面遷移・タブを閉じる等）にマイクストリームを
+  // 確実に解放する。stopListeningはボタンクリック時にしか呼ばれないため、
+  // これがないとアンマウント後もマイクの録音インジケーターが点灯したままになる
+  useEffect(() => {
+    return () => {
+      if (segmentTimerRef.current) clearTimeout(segmentTimerRef.current)
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
+      shouldContinueRef.current = false
+      const recorder = mediaRecorderRef.current
+      if (recorder && recorder.state !== 'inactive') {
+        recorder.onstop = null
+        recorder.stop()
+      }
+      streamRef.current?.getTracks().forEach(t => t.stop())
+      streamRef.current = null
+    }
   }, [])
 
   return {
