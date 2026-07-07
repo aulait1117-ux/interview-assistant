@@ -14,7 +14,10 @@ export default function HomePage({ onStart, onPricing, onLogin, onNavigateGuide 
     <div className="home-page">
       <div className="home-inner">
         {/* ロゴ */}
-        <div className="home-logo">InterviewAI</div>
+        <div className="home-logo">
+          <img className="brand-mark" src="/favicon.svg" alt="企業道" />
+          <span className="home-logo-text">InterviewAI</span>
+        </div>
 
         {/* キャッチコピー */}
         <h1 className="home-catchcopy">面接の不安を、自信に変える。</h1>

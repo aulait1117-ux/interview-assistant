@@ -23,7 +23,8 @@ export default function AppHeader({ onLogin, onPricing, onHome }: Props) {
         style={{ cursor: onHome ? 'pointer' : 'default' }}
         title="ホームに戻る"
       >
-        面接アシスタント
+        <img className="brand-mark" src="/favicon.svg" alt="" aria-hidden="true" />
+        <span className="app-logo-text">面接アシスタント</span>
       </div>
 
       <div className="header-right">
