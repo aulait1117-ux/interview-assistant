@@ -22,6 +22,82 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h2 style={{ fontSize: 22, fontWeight: 800, color: '#e2e8f0', margin: '48px 0 16px' }}>{children}</h2>
 }
 
+// インストーラの配布先（GitHub Releasesの「最新版」固定URL。バージョンを上げても同じ資産名で
+// 再アップすればこのURLは変わらない）。VITE_DESKTOP_DOWNLOAD_URL で差し替え可能。
+const DOWNLOAD_URL =
+  (import.meta.env.VITE_DESKTOP_DOWNLOAD_URL as string | undefined) ||
+  'https://github.com/aulait1117-ux/interview-assistant/releases/latest/download/interview-assistant-setup-windows-x64.exe'
+
+type OSKind = 'windows' | 'mac' | 'other'
+
+function detectOS(): OSKind {
+  if (typeof navigator === 'undefined') return 'other'
+  const ua = (navigator.userAgent || '').toLowerCase()
+  const platform = ((navigator as any).platform || '').toLowerCase()
+  if (ua.includes('windows') || platform.includes('win')) return 'windows'
+  // iPad/iPhone等のモバイルはmac扱いにしないよう先に除外
+  if (ua.includes('iphone') || ua.includes('ipad') || ua.includes('android')) return 'other'
+  if (ua.includes('mac') || platform.includes('mac')) return 'mac'
+  return 'other'
+}
+
+// ダウンロード導線（Windowsのみ実ダウンロード、それ以外は案内）。onTryBrowser=ブラウザ版に戻る導線
+function DownloadCTA({ onTryBrowser }: { onTryBrowser?: (e: React.MouseEvent) => void }) {
+  const os = detectOS()
+
+  if (os !== 'windows') {
+    return (
+      <div style={{
+        background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.3)',
+        borderRadius: 14, padding: 20, margin: '24px 0',
+      }}>
+        <p style={{ margin: '0 0 8px', fontSize: 15, fontWeight: 700, color: '#a5b4fc' }}>
+          インストール版は現在 Windows のみ対応です
+        </p>
+        <p style={{ margin: '0 0 14px', fontSize: 13, color: '#cbd5e1', lineHeight: 1.8 }}>
+          お使いの端末（Mac / スマートフォン等）ではインストール不要の<strong>ブラウザ版</strong>をご利用ください。
+          面接練習・リアルタイムのヒント表示はブラウザ版でも使えます。
+        </p>
+        <a href="/" onClick={onTryBrowser} style={{
+          display: 'inline-block', padding: '12px 24px', borderRadius: 10,
+          background: 'rgba(99,102,241,0.85)', color: '#fff', fontWeight: 700, fontSize: 14,
+          textDecoration: 'none', whiteSpace: 'nowrap',
+        }}>
+          ブラウザ版を試す →
+        </a>
+      </div>
+    )
+  }
+
+  return (
+    <div style={{
+      background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.35)',
+      borderRadius: 14, padding: 24, margin: '24px 0', textAlign: 'center',
+    }}>
+      <a href={DOWNLOAD_URL} download style={{
+        display: 'inline-block', padding: '16px 40px', borderRadius: 12,
+        background: '#22c55e', color: '#04140a', fontWeight: 900, fontSize: 17,
+        textDecoration: 'none', whiteSpace: 'nowrap', boxShadow: '0 6px 20px rgba(34,197,94,0.25)',
+      }}>
+        ⬇ Windows版をダウンロード（無料）
+      </a>
+      <p style={{ margin: '12px 0 0', fontSize: 12, color: '#86efac' }}>
+        Windows 10 / 11（64bit）対応・約80MB
+      </p>
+      <div style={{
+        marginTop: 16, padding: 12, background: 'rgba(234,179,8,0.08)',
+        border: '1px solid rgba(234,179,8,0.3)', borderRadius: 10, textAlign: 'left',
+      }}>
+        <p style={{ margin: 0, fontSize: 12.5, color: '#fde68a', lineHeight: 1.9 }}>
+          ⚠️ インストール時に「WindowsによってPCが保護されました」という青い警告が出ることがあります。
+          これは発行元未登録のアプリで表示される標準の確認です。
+          <strong>「詳細情報」→「実行」</strong>の順に押すとインストールできます。
+        </p>
+      </div>
+    </div>
+  )
+}
+
 export default function DesktopGuide({ onBack }: Props) {
   return (
     <div style={{ minHeight: '100vh', background: '#0f172a', color: '#e2e8f0' }}>
@@ -39,6 +115,13 @@ export default function DesktopGuide({ onBack }: Props) {
         <p style={{ color: '#94a3b8', fontSize: 15, lineHeight: 1.8 }}>
           面接アシスタントには「ブラウザ版」と「インストール版（デスクトップアプリ）」の2種類があります。
           どちらを使えばいいか迷ったら、このページで違いを確認してください。
+        </p>
+
+        {/* ダウンロードCTA（Windowsのみ実DL・それ以外はブラウザ版へ案内） */}
+        <DownloadCTA onTryBrowser={onBack} />
+        <p style={{ color: '#64748b', fontSize: 13, lineHeight: 1.8, margin: '4px 0 0' }}>
+          まずは<strong>インストール不要のブラウザ版</strong>で試して、Zoomの上にヒントを重ねたくなったら
+          インストール版へ——という順番がおすすめです。
         </p>
 
         {/* 1. ブラウザ版との違い（比較表） */}
@@ -127,7 +210,11 @@ export default function DesktopGuide({ onBack }: Props) {
           </ul>
         </div>
 
-        <div style={{ marginTop: 48, textAlign: 'center' }}>
+        {/* 7. ダウンロード（ページ下部にも再掲） */}
+        <SectionTitle>7. ダウンロード</SectionTitle>
+        <DownloadCTA onTryBrowser={onBack} />
+
+        <div style={{ marginTop: 32, textAlign: 'center' }}>
           <a href="/" onClick={onBack} style={{
             display: 'inline-block', padding: '14px 32px', borderRadius: 12,
             background: 'rgba(99,102,241,0.85)', color: '#fff', fontWeight: 700, fontSize: 15, textDecoration: 'none',
