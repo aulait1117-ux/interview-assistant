@@ -34,6 +34,15 @@ PLAN_PRICES = {
     "monthly_discount": {"amount": 1000, "label": "月額プラン（割引）"},
 }
 
+# 自動更新サブスク（Stripe mode="subscription"）で扱うプラン（2026-07-08、社長判断）。
+# それ以外（day1h/day24h）は従来どおり mode="payment" の都度課金。
+SUBSCRIPTION_PLANS = {"monthly", "monthly_discount"}
+# サブスクの課金周期（日数）。既存の都度課金monthlyと同じ31日周期を踏襲。
+SUBSCRIPTION_PERIOD_DAYS = 31
+# カード明細に出る表記。身に覚えのない請求」型チャージバックを減らすため明確化（財務部試算の最優先対策）。
+# ※アカウント全体の statement descriptor は Stripe ダッシュボード側設定が優先されるため、そちらも "InterviewAI" に設定すること。
+STATEMENT_DESCRIPTOR = "INTERVIEWAI"
+
 # 利用可能な決済プロバイダー一覧（フロントエンド表示用）
 PROVIDERS = [
     {"id": "stripe_card",    "label": "クレジット/デビットカード", "icon": "💳", "available": True},
@@ -84,6 +93,14 @@ async def checkout(req: CheckoutRequest, user=Depends(get_current_user), db: Con
     if req.plan == "monthly_discount" and not user["used_day_plan"]:
         raise HTTPException(status_code=400, detail="1日プランの利用履歴がないため割引を適用できません")
 
+    # 自動更新サブスク（monthly系）はカード決済のみ対応。
+    # コンビニ払い・PayPay・LINE Payは継続課金（オートリニューアル）に対応しないため拒否する。
+    if req.plan in SUBSCRIPTION_PLANS and req.provider != "stripe_card":
+        raise HTTPException(
+            status_code=400,
+            detail="月額プラン（自動更新）はクレジット/デビットカードのみご利用いただけます。",
+        )
+
     plan_info = PLAN_PRICES[req.plan]
     payment_id = str(uuid.uuid4())
 
@@ -112,40 +129,72 @@ async def _stripe_checkout(payment_id: str, plan: str, plan_info: dict, method: 
         import stripe
         stripe.api_key = STRIPE_SECRET
 
-        if method == "konbini":
-            session_params = {
-                "payment_method_types": ["konbini"],
-                "payment_method_options": {
-                    "konbini": {"expires_after_days": 3}
-                },
-            }
-        else:
-            # カード + Apple Pay / Google Pay（Stripe Checkoutが自動でウォレット表示）
-            session_params = {
-                "payment_method_types": ["card"],
-            }
+        is_subscription = plan in SUBSCRIPTION_PLANS
+        common = {
+            "success_url": f"{FRONTEND_URL}/?plan={plan}&session_id={{CHECKOUT_SESSION_ID}}&method={method}",
+            "cancel_url": f"{FRONTEND_URL}/",
+            "metadata": {"user_id": user["id"], "plan": plan, "payment_id": payment_id, "method": method},
+        }
 
-        session = stripe.checkout.Session.create(
-            **session_params,
-            line_items=[{
-                "price_data": {
-                    "currency": "jpy",
-                    "product_data": {"name": plan_info["label"]},
-                    "unit_amount": plan_info["amount"],
+        if is_subscription:
+            # 自動更新サブスク（mode="subscription"）。カードのみ。
+            # 既にStripe顧客IDがあれば再利用（無ければStripeがcheckoutで作成し、webhookで保存）。
+            customer_id = user.get("stripe_customer_id")
+            session = stripe.checkout.Session.create(
+                payment_method_types=["card"],
+                line_items=[{
+                    "price_data": {
+                        "currency": "jpy",
+                        "product_data": {"name": f"InterviewAI {plan_info['label']}"},
+                        "unit_amount": plan_info["amount"],
+                        "recurring": {"interval": "month"},
+                    },
+                    "quantity": 1,
+                }],
+                mode="subscription",
+                # サブスク側にもmetadataを持たせ、invoice.paid等のwebhookでuser/planを引けるようにする
+                subscription_data={
+                    "metadata": {"user_id": user["id"], "plan": plan, "payment_id": payment_id},
                 },
-                "quantity": 1,
-            }],
-            mode="payment",
-            success_url=f"{FRONTEND_URL}/?plan={plan}&session_id={{CHECKOUT_SESSION_ID}}&method={method}",
-            cancel_url=f"{FRONTEND_URL}/",
-            metadata={"user_id": user["id"], "plan": plan, "payment_id": payment_id, "method": method},
-        )
+                **({"customer": customer_id} if customer_id else {"customer_email": user.get("email")}),
+                **common,
+            )
+        else:
+            # 都度課金（day系・monthly系以外）。従来どおり mode="payment"。
+            if method == "konbini":
+                session_params = {
+                    "payment_method_types": ["konbini"],
+                    "payment_method_options": {
+                        "konbini": {"expires_after_days": 3}
+                    },
+                }
+            else:
+                # カード + Apple Pay / Google Pay（Stripe Checkoutが自動でウォレット表示）
+                session_params = {
+                    "payment_method_types": ["card"],
+                }
+            session = stripe.checkout.Session.create(
+                **session_params,
+                line_items=[{
+                    "price_data": {
+                        "currency": "jpy",
+                        "product_data": {"name": plan_info["label"]},
+                        "unit_amount": plan_info["amount"],
+                    },
+                    "quantity": 1,
+                }],
+                mode="payment",
+                # カード明細の表記を明確化（"身に覚えのない請求"型チャージバック対策）
+                payment_intent_data={"statement_descriptor_suffix": STATEMENT_DESCRIPTOR},
+                **common,
+            )
+
         await db.execute(
             "INSERT INTO payments (id, user_id, plan, amount, provider, provider_payment_id, status) VALUES (?,?,?,?,?,?,?)",
-            (payment_id, user["id"], plan, plan_info["amount"], f"stripe_{method}", session.id, "pending")
+            (payment_id, user["id"], plan, plan_info["amount"], f"stripe_{'sub' if is_subscription else method}", session.id, "pending")
         )
         await db.commit()
-        return {"checkout_url": session.url, "provider": "stripe", "method": method}
+        return {"checkout_url": session.url, "provider": "stripe", "method": method, "subscription": is_subscription}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -265,10 +314,21 @@ async def stripe_webhook(request: Request, db: Connection = Depends(get_db)):
 
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
-        # カード決済は即時確定（payment_status=paid）、コンビニは非同期なのでここでは無視
-        if session.get("payment_status") == "paid":
-            meta = session.get("metadata", {})
-            await _activate_plan(meta.get("user_id"), meta.get("plan"), meta.get("payment_id"), db)
+        meta = session.get("metadata", {})
+        if session.get("mode") == "subscription":
+            # 自動更新サブスクの初回決済。顧客ID・サブスクIDを保存し、状態activeでプラン有効化。
+            if session.get("payment_status") in ("paid", "no_payment_required"):
+                await db.execute(
+                    "UPDATE users SET stripe_customer_id=?, stripe_subscription_id=?, "
+                    "subscription_status='active', cancel_at_period_end=0 WHERE id=?",
+                    (session.get("customer"), session.get("subscription"), meta.get("user_id")),
+                )
+                await db.commit()
+                await _activate_plan(meta.get("user_id"), meta.get("plan"), meta.get("payment_id"), db)
+        else:
+            # 都度課金カード決済は即時確定（payment_status=paid）、コンビニは非同期なのでここでは無視
+            if session.get("payment_status") == "paid":
+                await _activate_plan(meta.get("user_id"), meta.get("plan"), meta.get("payment_id"), db)
 
     elif event["type"] == "checkout.session.async_payment_succeeded":
         # コンビニ払い完了（レジで支払われた）
@@ -284,7 +344,79 @@ async def stripe_webhook(request: Request, db: Connection = Depends(get_db)):
             await db.execute("UPDATE payments SET status='failed' WHERE id=?", (meta["payment_id"],))
             await db.commit()
 
+    elif event["type"] == "invoice.paid":
+        # サブスクの継続課金（2回目以降の自動更新）。初回は checkout.session.completed で処理済み。
+        invoice = event["data"]["object"]
+        if invoice.get("billing_reason") == "subscription_cycle":
+            sub_id = invoice.get("subscription")
+            user_id = await _find_user_id(db, subscription_id=sub_id, customer_id=invoice.get("customer"))
+            if user_id:
+                # planはサブスクmetadata優先、無ければDB上の現行プランを維持（monthly_discount取り違え防止）
+                sub_meta = (invoice.get("subscription_details") or {}).get("metadata") or {}
+                plan = sub_meta.get("plan")
+                await _renew_subscription(user_id, plan, db)
+
+    elif event["type"] == "invoice.payment_failed":
+        # 自動更新の決済失敗（カード期限切れ等）。past_dueにする（Stripeがリトライ／最終的にdeletedを送る）。
+        invoice = event["data"]["object"]
+        user_id = await _find_user_id(db, subscription_id=invoice.get("subscription"), customer_id=invoice.get("customer"))
+        if user_id:
+            await db.execute("UPDATE users SET subscription_status='past_due' WHERE id=?", (user_id,))
+            await db.commit()
+
+    elif event["type"] == "customer.subscription.deleted":
+        # サブスク終了（期末解約の確定、またはリトライ切れ）。状態をcanceledにする。
+        # プランはplan_expires_at満了時にget_current_userの自動ダウングレードで無料へ戻る。
+        sub = event["data"]["object"]
+        user_id = await _find_user_id(db, subscription_id=sub.get("id"), customer_id=sub.get("customer"))
+        if user_id:
+            await db.execute(
+                "UPDATE users SET subscription_status='canceled', cancel_at_period_end=0 WHERE id=?",
+                (user_id,),
+            )
+            await db.commit()
+
     return {"status": "ok"}
+
+
+async def _find_user_id(db: Connection, subscription_id: str | None = None, customer_id: str | None = None):
+    """Stripeのサブスク/顧客IDからユーザーIDを引く。サブスクID優先。"""
+    if subscription_id:
+        cur = await db.execute("SELECT id FROM users WHERE stripe_subscription_id=?", (subscription_id,))
+        row = await cur.fetchone()
+        if row:
+            return row[0]
+    if customer_id:
+        cur = await db.execute("SELECT id FROM users WHERE stripe_customer_id=?", (customer_id,))
+        row = await cur.fetchone()
+        if row:
+            return row[0]
+    return None
+
+
+async def _renew_subscription(user_id: str, plan: str | None, db: Connection):
+    """自動更新：利用期限を現在の期限（未来なら）またはnowから31日延長し、状態をactiveへ。
+    plan未指定時はDB上の現行プランを維持する（monthly/monthly_discountの取り違え防止）。"""
+    now = datetime.utcnow()
+    cur = await db.execute("SELECT plan, plan_expires_at FROM users WHERE id=?", (user_id,))
+    row = await cur.fetchone()
+    current_plan = row[0] if row else None
+    # metadata優先。無ければ現行プラン。それも無ければ月額扱い。
+    plan = plan or (current_plan if current_plan in SUBSCRIPTION_PLANS else "monthly")
+    base = now
+    if row and row[1]:
+        try:
+            current = datetime.fromisoformat(str(row[1]).replace("Z", "+00:00")).replace(tzinfo=None)
+            if current > now:
+                base = current
+        except Exception:
+            base = now
+    expires_at = base + timedelta(days=SUBSCRIPTION_PERIOD_DAYS)
+    await db.execute(
+        "UPDATE users SET plan=?, plan_expires_at=?, subscription_status='active', trial_minutes_used=0 WHERE id=?",
+        (plan, expires_at.isoformat(), user_id),
+    )
+    await db.commit()
 
 
 @router.post("/payment/success")
@@ -323,6 +455,14 @@ async def payment_success(
         raise HTTPException(status_code=400, detail="プランが一致しません")
 
     payment_id = meta.get("payment_id")
+    # サブスクの場合は顧客ID・サブスクIDもここで保存しておく（webhook遅延時も解約が効くように）
+    if session.get("mode") == "subscription" and session.get("subscription"):
+        await db.execute(
+            "UPDATE users SET stripe_customer_id=?, stripe_subscription_id=?, "
+            "subscription_status='active', cancel_at_period_end=0 WHERE id=?",
+            (session.get("customer"), session.get("subscription"), user["id"]),
+        )
+        await db.commit()
     await _activate_plan(user["id"], plan, payment_id, db)
     return {"status": "ok", "plan": plan}
 
@@ -344,6 +484,57 @@ async def _activate_plan(user_id: str, plan: str, payment_id: str | None, db: Co
     if payment_id:
         await db.execute("UPDATE payments SET status='completed' WHERE id=?", (payment_id,))
     await db.commit()
+
+
+@router.get("/subscription")
+async def get_subscription(user=Depends(get_current_user)):
+    """現在のサブスク状態（UI表示用）。DBの保持値を返す（Stripeへは問い合わせない）。"""
+    has_sub = bool(user.get("stripe_subscription_id")) and user.get("subscription_status") in ("active", "past_due")
+    return {
+        "has_subscription": has_sub,
+        "status": user.get("subscription_status"),
+        "cancel_at_period_end": bool(user.get("cancel_at_period_end")),
+        "plan": user.get("plan"),
+        "plan_expires_at": user.get("plan_expires_at"),
+    }
+
+
+@router.post("/subscription/cancel")
+async def cancel_subscription(user=Depends(get_current_user), db: Connection = Depends(get_db)):
+    """自動更新を停止（期末解約）。当該期間の満了日までは引き続き利用可能。"""
+    sub_id = user.get("stripe_subscription_id")
+    if not sub_id or user.get("subscription_status") not in ("active", "past_due"):
+        raise HTTPException(status_code=400, detail="有効な自動更新サブスクがありません")
+    if not STRIPE_SECRET:
+        raise HTTPException(status_code=503, detail="Stripe未設定")
+    try:
+        import stripe
+        stripe.api_key = STRIPE_SECRET
+        stripe.Subscription.modify(sub_id, cancel_at_period_end=True)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"解約処理でエラー: {e}")
+    await db.execute("UPDATE users SET cancel_at_period_end=1 WHERE id=?", (user["id"],))
+    await db.commit()
+    return {"status": "ok", "cancel_at_period_end": True, "plan_expires_at": user.get("plan_expires_at")}
+
+
+@router.post("/subscription/resume")
+async def resume_subscription(user=Depends(get_current_user), db: Connection = Depends(get_db)):
+    """期末解約の予約を取り消し、自動更新を継続する。"""
+    sub_id = user.get("stripe_subscription_id")
+    if not sub_id or user.get("subscription_status") not in ("active", "past_due"):
+        raise HTTPException(status_code=400, detail="有効な自動更新サブスクがありません")
+    if not STRIPE_SECRET:
+        raise HTTPException(status_code=503, detail="Stripe未設定")
+    try:
+        import stripe
+        stripe.api_key = STRIPE_SECRET
+        stripe.Subscription.modify(sub_id, cancel_at_period_end=False)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"再開処理でエラー: {e}")
+    await db.execute("UPDATE users SET cancel_at_period_end=0 WHERE id=?", (user["id"],))
+    await db.commit()
+    return {"status": "ok", "cancel_at_period_end": False}
 
 
 @router.post("/track-usage")

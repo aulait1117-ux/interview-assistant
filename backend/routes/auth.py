@@ -67,7 +67,9 @@ async def get_current_user(
     if not user_id:
         raise HTTPException(status_code=401, detail="トークンが無効です")
     cursor = await db.execute(
-        "SELECT id, email, plan, plan_expires_at, trial_minutes_used, used_day_plan, is_admin FROM users WHERE id = ?",
+        "SELECT id, email, plan, plan_expires_at, trial_minutes_used, used_day_plan, is_admin, "
+        "stripe_customer_id, stripe_subscription_id, subscription_status, cancel_at_period_end "
+        "FROM users WHERE id = ?",
         (user_id,)
     )
     row = await cursor.fetchone()
@@ -95,6 +97,8 @@ async def get_current_user(
         "id": row[0], "email": row[1], "plan": plan,
         "plan_expires_at": plan_expires_at, "trial_minutes_used": row[4],
         "used_day_plan": row[5], "is_admin": bool(row[6]),
+        "stripe_customer_id": row[7], "stripe_subscription_id": row[8],
+        "subscription_status": row[9], "cancel_at_period_end": bool(row[10]),
     }
 
 

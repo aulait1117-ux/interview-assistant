@@ -47,6 +47,20 @@ async def init_db():
             await db.execute("ALTER TABLE users ADD COLUMN device_id TEXT")
         except Exception:
             pass  # カラムが既に存在する場合は無視
+        # マイグレーション: 月額自動更新サブスク用カラム（2026-07-08）
+        # stripe_customer_id: Stripe顧客ID / stripe_subscription_id: サブスクID
+        # subscription_status: active|past_due|canceled|none（Stripe側の状態を反映）
+        # cancel_at_period_end: 期末解約予約フラグ（1=次回更新しない）
+        for _col, _ddl in (
+            ("stripe_customer_id",     "ALTER TABLE users ADD COLUMN stripe_customer_id TEXT"),
+            ("stripe_subscription_id", "ALTER TABLE users ADD COLUMN stripe_subscription_id TEXT"),
+            ("subscription_status",    "ALTER TABLE users ADD COLUMN subscription_status TEXT"),
+            ("cancel_at_period_end",   "ALTER TABLE users ADD COLUMN cancel_at_period_end INTEGER NOT NULL DEFAULT 0"),
+        ):
+            try:
+                await db.execute(_ddl)
+            except Exception:
+                pass  # カラムが既に存在する場合は無視
         await db.execute("""
             CREATE TABLE IF NOT EXISTS payments (
                 id TEXT PRIMARY KEY,

@@ -67,16 +67,66 @@ const PLAN_META: Record<string, {
   },
 }
 
+interface SubStatus {
+  has_subscription: boolean
+  status: string | null
+  cancel_at_period_end: boolean
+  plan: string | null
+  plan_expires_at: string | null
+}
+
 export default function PricingPage({ onBack }: Props) {
   const { user, refreshUser } = useAuth()
   const [plans, setPlans] = useState<Plan[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [checkoutError, setCheckoutError] = useState<string | null>(null)
   const [selectedProvider, setSelectedProvider] = useState<string>('stripe_card')
+  const [sub, setSub] = useState<SubStatus | null>(null)
+  const [subBusy, setSubBusy] = useState(false)
 
   useEffect(() => {
     axios.get<Plan[]>('/api/billing/plans').then(r => setPlans(r.data))
   }, [])
+
+  const loadSubscription = () => {
+    if (!user) { setSub(null); return }
+    axios.get<SubStatus>('/api/billing/subscription').then(r => setSub(r.data)).catch(() => setSub(null))
+  }
+  useEffect(loadSubscription, [user])
+
+  const formatDate = (iso: string | null) => {
+    if (!iso) return ''
+    const d = new Date(iso.replace(' ', 'T'))
+    if (isNaN(d.getTime())) return ''
+    return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`
+  }
+
+  const handleCancel = async () => {
+    if (!window.confirm('自動更新を停止しますか？\n現在の期間の満了日までは引き続きご利用いただけます。')) return
+    setSubBusy(true)
+    try {
+      await axios.post('/api/billing/subscription/cancel')
+      loadSubscription()
+      await refreshUser()
+    } catch (err: any) {
+      alert(err.response?.data?.detail || '解約処理でエラーが発生しました')
+    } finally {
+      setSubBusy(false)
+    }
+  }
+
+  const handleResume = async () => {
+    setSubBusy(true)
+    try {
+      await axios.post('/api/billing/subscription/resume')
+      loadSubscription()
+      await refreshUser()
+    } catch (err: any) {
+      alert(err.response?.data?.detail || '再開処理でエラーが発生しました')
+    } finally {
+      setSubBusy(false)
+    }
+  }
 
   const handleCheckout = async (planId: string) => {
     setIsLoading(true)
@@ -107,6 +157,36 @@ export default function PricingPage({ onBack }: Props) {
       </header>
 
       <div className="pricing-body">
+        {/* 自動更新サブスクの契約管理パネル（契約中のみ表示） */}
+        {sub?.has_subscription && (
+          <div className="subscription-panel">
+            <div className="subscription-panel-head">
+              <span className="subscription-panel-title">🔁 月額プラン（自動更新）ご契約中</span>
+              <span className={`subscription-status-tag ${sub.status === 'past_due' ? 'past-due' : sub.cancel_at_period_end ? 'canceling' : 'active'}`}>
+                {sub.status === 'past_due' ? '決済失敗（要確認）' : sub.cancel_at_period_end ? '解約予約済み' : '有効'}
+              </span>
+            </div>
+            <p className="subscription-panel-body">
+              {sub.cancel_at_period_end ? (
+                <>自動更新は停止済みです。<strong>{formatDate(sub.plan_expires_at)}</strong>まで利用でき、以降は無料プランに戻ります。</>
+              ) : (
+                <>次回更新日は<strong>{formatDate(sub.plan_expires_at)}</strong>です。以降、解約されるまで31日ごとに自動で更新・課金されます。</>
+              )}
+            </p>
+            <div className="subscription-panel-actions">
+              {sub.cancel_at_period_end ? (
+                <button className="btn-sub-resume" onClick={handleResume} disabled={subBusy}>
+                  {subBusy ? '処理中...' : '自動更新を再開する'}
+                </button>
+              ) : (
+                <button className="btn-sub-cancel" onClick={handleCancel} disabled={subBusy}>
+                  {subBusy ? '処理中...' : '自動更新を停止（解約）する'}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* 1日プラン購入者向け割引バナー */}
         <div className="day-plan-discount-banner">
           <div className="discount-banner-icon">🎉</div>
@@ -198,7 +278,7 @@ export default function PricingPage({ onBack }: Props) {
                   {plan.id === 'free' && '30分間お試し'}
                   {plan.id === 'day1h' && '24時間有効・1時間まで'}
                   {plan.id === 'day24h' && '24時間有効・使い放題'}
-                  {(plan.id === 'monthly' || plan.id === 'monthly_discount') && '31日間有効・使い放題'}
+                  {(plan.id === 'monthly' || plan.id === 'monthly_discount') && '31日ごとに自動更新・使い放題'}
                 </div>
 
                 {/* タグライン */}
@@ -226,6 +306,13 @@ export default function PricingPage({ onBack }: Props) {
                   <div className="monthly-day-discount-note">
                     <span className="day-discount-icon">🏷️</span>
                     <span>1日プラン購入者は<strong>¥1,000引き</strong>で利用可能！</span>
+                  </div>
+                )}
+
+                {/* 自動更新の事前明示（月額プランのみ・購入前告知） */}
+                {(plan.id === 'monthly' || plan.id === 'monthly_discount') && (
+                  <div className="plan-autorenew-note">
+                    🔁 31日ごとに自動更新（自動継続課金）。カード決済のみ。マイページからいつでも解約でき、解約後も期間満了日まで利用可能です。
                   </div>
                 )}
 
@@ -330,8 +417,9 @@ export default function PricingPage({ onBack }: Props) {
 
         <div className="pricing-notes">
           <p>✓ Stripe・PayPayによる安全な決済</p>
-          <p>✓ 1日プランは購入から24時間有効</p>
-          <p>✓ 月額プランは購入から31日間有効</p>
+          <p>✓ 1日プランは購入から24時間有効（自動更新なし・都度購入）</p>
+          <p>✓ <strong>月額プランは31日ごとに自動更新（自動継続課金）</strong>。カード決済のみ・マイページからいつでも解約でき、解約後も期間満了日まで利用できます</p>
+          <p>✓ 自動更新の停止（解約）後、日割りでの返金は行いません（特定商取引法に基づく表記をご確認ください）</p>
           <p>✓ 1日プランを一度でも購入すると月額が<strong>¥1,000</strong>に割引（通常¥2,000）</p>
         </div>
       </div>
