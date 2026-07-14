@@ -22,6 +22,12 @@ services:
       # 認証
       - key: SECRET_KEY
         generateValue: true
+      # JWTの署名鍵。2026-07-14追加。これが無かったため、backend/services/auth_service.py が
+      # ソースに書かれた公開デフォルト値でトークンを署名していた（＝誰でもなりすまし可能）。
+      # generateValue: true でRenderがランダム値を生成し、以後固定される。
+      # 注意：この鍵が変わると既存のログイントークンは全て無効になり、利用者は再ログインが要る。
+      - key: JWT_SECRET
+        generateValue: true
       - key: GOOGLE_CLIENT_ID
         sync: false
 

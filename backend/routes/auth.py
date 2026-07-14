@@ -1,5 +1,6 @@
 import os
 import uuid
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Header, Request
 from aiosqlite import Connection
 from pydantic import BaseModel, EmailStr
@@ -18,8 +19,11 @@ REGISTER_IP_LIMIT_PER_DAY = 20
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-# オーバーレイ用トークン共有（ChromeとElectronのlocalStorageが別のため）
-_overlay_token: str | None = None
+# オーバーレイ用トークンの一時受け渡し（ChromeとElectronのlocalStorageが別のため）。
+# IP → {"token", "expires_at"}。2026-07-14、認証欠如の修正でグローバル1個から置き換えた
+# （旧実装は最後の1人のトークンを誰にでも返していた）。詳細は sync_token() のdocstring参照。
+_overlay_tokens: dict[str, dict] = {}
+OVERLAY_TOKEN_TTL_SECONDS = 300
 
 
 def _client_ip(request: Request) -> str:
@@ -170,17 +174,40 @@ class SyncTokenRequest(BaseModel):
 
 
 @router.post("/sync-token")
-async def sync_token(req: SyncTokenRequest):
-    """ChromeのlocalStorageトークンをバックエンド経由でオーバーレイへ共有"""
-    global _overlay_token
-    _overlay_token = req.token
+async def sync_token(req: SyncTokenRequest, request: Request):
+    """ChromeのlocalStorageトークンをバックエンド経由でオーバーレイ（Electron）へ渡す。
+
+    2026-07-14、品質管理部の独立レビューで発見した「誰でも他人のトークンを取得できる」穴の修正。
+    修正前は _overlay_token というモジュールグローバル1個に最後の1人のトークンを入れ、
+    GET /api/auth/overlay-token が**認証なしでそれを返していた**。つまり誰かがChromeで
+    オーバーレイを使った直後に、赤の他人がこのGETを叩けば、そのトークンでなりすませた。
+
+    ChromeとElectronは同じPCで動く前提なので、次の3点で受け渡しを絞る：
+      ① 渡すトークンが本物であること（decodeできる＝ログイン済みのトークンのみ受け付ける）
+      ② 取りに来る相手が同じIPであること（別の人のネットワークからは取れない）
+      ③ 1回だけ・5分で失効（取られっぱなしにしない）
+
+    ※ 残存リスク：同一のグローバルIPを共有する環境（CGNAT・社内LAN等）では、5分以内に
+    他人が先に取得しうる。根本対策は「Chromeに表示したペアリングコードをオーバーレイに
+    入力させる」方式で、UI変更を伴うため別対応とする（`09_進行状況/blockers.md`へ記録）。
+    """
+    user_id = decode_token(req.token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="トークンが無効です")
+    _overlay_tokens[_client_ip(request)] = {
+        "token": req.token,
+        "expires_at": datetime.utcnow() + timedelta(seconds=OVERLAY_TOKEN_TTL_SECONDS),
+    }
     return {"ok": True}
 
 
 @router.get("/overlay-token")
-async def get_overlay_token():
-    """オーバーレイがトークンを取得するエンドポイント"""
-    return {"token": _overlay_token}
+async def get_overlay_token(request: Request):
+    """オーバーレイ（Electron）がトークンを受け取る。同じIPが直前に置いた分だけ・1回限り。"""
+    entry = _overlay_tokens.pop(_client_ip(request), None)
+    if not entry or entry["expires_at"] < datetime.utcnow():
+        return {"token": None}
+    return {"token": entry["token"]}
 
 
 class GoogleAuthRequest(BaseModel):
